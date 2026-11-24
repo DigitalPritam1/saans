@@ -20,7 +20,7 @@ test('API GET /api/aqi with mocked Google Air Quality API returns compact JSON',
         status: 200,
         json: async () => ({
           dateTime: '2026-11-24T06:00:00Z',
-          indexes: [{ code: 'aqi_in', aqi: 310, category: 'Very Poor', dominantPollutant: 'pm25' }],
+          indexes: [{ code: 'ind_cpcb', aqi: 310, category: 'Very Poor', dominantPollutant: 'pm25' }],
           healthRecommendations: { generalPopulation: 'Wear an N95 mask outdoors.' }
         })
       };
@@ -30,7 +30,7 @@ test('API GET /api/aqi with mocked Google Air Quality API returns compact JSON',
       status: 200,
       json: async () => ({
         hourlyForecasts: [
-          { dateTime: '2026-11-24T07:00:00Z', indexes: [{ code: 'aqi_in', aqi: 320, category: 'Very Poor' }] }
+          { dateTime: '2026-11-24T07:00:00Z', indexes: [{ code: 'ind_cpcb', aqi: 320, category: 'Very Poor' }] }
         ]
       })
     };
@@ -40,7 +40,7 @@ test('API GET /api/aqi with mocked Google Air Quality API returns compact JSON',
     const res = await request(app).get('/api/aqi?lat=28.61&lng=77.20');
     assert.equal(res.status, 200);
     assert.equal(res.body.aqi, 310);
-    assert.equal(res.body.category, 'Very Poor');
+    assert.equal(res.body.category, 'Very poor');
     assert.equal(res.body.dominantPollutant, 'pm25');
     assert.ok(res.body.color);
     assert.equal(res.body.forecast.length, 1);
@@ -168,4 +168,62 @@ test('Rate Limiter: enforces request threshold and returns 429 when exceeded', a
   const limitedRes = await request(testApp).get('/test-limit');
   assert.equal(limitedRes.status, 429);
   assert.ok(limitedRes.body.error.includes('Too many requests'));
+});
+
+test('API GET /api/weather with mocked Weather API returns current conditions and inversion analysis', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = config.googleMapsApiKey;
+  config.googleMapsApiKey = 'test-key';
+
+  globalThis.fetch = async (url) => {
+    assert.ok(url.includes('weather.googleapis.com'));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        temperature: { degrees: 13.5 },
+        feelsLikeTemperature: { degrees: 12.0 },
+        relativeHumidity: 78,
+        wind: { speed: { value: 5.0 }, direction: { cardinal: 'NW' } },
+        uvIndex: 2,
+        weatherCondition: { description: { text: 'Smoky' } }
+      })
+    };
+  };
+
+  try {
+    const res = await request(app).get('/api/weather?lat=28.61&lng=77.20');
+    assert.equal(res.status, 200);
+    assert.equal(res.body.temperature, 14);
+    assert.equal(res.body.humidity, 78);
+    assert.equal(res.body.windSpeed, 5);
+    assert.equal(res.body.inversionRisk.hasRisk, true);
+    assert.equal(res.body.inversionRisk.text, 'Low wind and a cold morning trap smoke near the ground');
+  } finally {
+    globalThis.fetch = originalFetch;
+    config.googleMapsApiKey = originalKey;
+  }
+});
+
+test('API GET /api/weather returns 400 on missing coordinates', async () => {
+  const res = await request(app).get('/api/weather');
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'Validation failed');
+});
+
+test('API GET /api/cities returns 8 Indian metro cities with AQI and band', async () => {
+  const res = await request(app).get('/api/cities');
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(res.body.cities));
+  assert.equal(res.body.cities.length, 8);
+
+  const cityNames = res.body.cities.map(c => c.name);
+  assert.ok(cityNames.includes('Delhi'));
+  assert.ok(cityNames.includes('Mumbai'));
+  assert.ok(cityNames.includes('Bengaluru'));
+
+  const delhi = res.body.cities.find(c => c.name === 'Delhi');
+  assert.ok(typeof delhi.aqi === 'number');
+  assert.ok(delhi.band);
+  assert.ok(delhi.category);
 });

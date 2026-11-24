@@ -1,0 +1,17 @@
+{
+  "name": "Saans - Clean Air & Smog Assistant",
+  "short_name": "Saans",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090D16",
+  "theme_color": "#0F766E",
+  "description": "Calm, clinical-grade environmental air quality and winter smog protection assistant for Indian families.",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

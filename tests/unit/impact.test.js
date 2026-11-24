@@ -7,7 +7,9 @@ import {
   estimateMaskProtection,
   estimateIndoorProtection,
   estimateCommuteShift,
-  estimateCookingFuelShift
+  estimateCookingFuelShift,
+  estimateCigaretteEquivalent,
+  computeWhatToDoNow
 } from '../../server/impact.js';
 
 test('server/impact.js exports standard documented factors', () => {
@@ -76,4 +78,48 @@ test('estimateCookingFuelShift computes daily and weekly emissions', () => {
   assert.equal(res.dailySavedKg, 2.58);
   assert.equal(res.weeklySavedKg, 18.1);
   assert.ok(res.explanation.includes('prevents ~18.1 kg CO₂e weekly'));
+});
+
+test('estimateCigaretteEquivalent computes cigarettes from PM2.5 via Berkeley Earth formula', () => {
+  // 176 µg/m³ -> 176 / 22 = 8 cigarettes
+  const res8 = estimateCigaretteEquivalent(176);
+  assert.equal(res8.cigarettes, 8);
+  assert.equal(res8.text, 'Breathing this air for 24 hours is roughly like smoking 8 cigarettes.');
+  assert.ok(res8.explanation.includes('Berkeley Earth'));
+
+  // 33 µg/m³ -> 33 / 22 = 1.5 cigarettes (rounded to 1 decimal under 2)
+  const res1_5 = estimateCigaretteEquivalent(33);
+  assert.equal(res1_5.cigarettes, 1.5);
+  assert.equal(res1_5.text, 'Breathing this air for 24 hours is roughly like smoking 1.5 cigarettes.');
+
+  // 0 or invalid
+  const res0 = estimateCigaretteEquivalent(0);
+  assert.equal(res0.cigarettes, 0);
+  assert.equal(res0.text, 'Breathing this air for 24 hours is roughly like smoking 0 cigarettes.');
+});
+
+test('computeWhatToDoNow determines correct action statuses for various AQI bands and profiles', () => {
+  // Severe air (AQI 350) with vulnerable family
+  const severeVulnerable = computeWhatToDoNow(350, 'very_poor', { vulnerable: ['kids', 'asthma'] });
+  assert.equal(severeVulnerable.purifier.status, 'Turn on');
+  assert.equal(severeVulnerable.windows.status, 'Keep closed');
+  assert.equal(severeVulnerable.mask.status, 'Must');
+  assert.equal(severeVulnerable.outdoor.status, 'Avoid');
+
+  // Moderate air (AQI 150) without vulnerable
+  const moderateNormal = computeWhatToDoNow(150, 'moderate', { vulnerable: [] });
+  assert.equal(moderateNormal.purifier.status, 'Turn on');
+  assert.equal(moderateNormal.mask.status, 'Optional');
+  assert.equal(moderateNormal.outdoor.status, 'Limit');
+
+  // Moderate air with daytime window allowing ventilation
+  const moderateWindow = computeWhatToDoNow(150, 'moderate', { vulnerable: [] }, { aqi: 180, start: '12:00 PM', end: '3:00 PM' });
+  assert.equal(moderateWindow.windows.status, 'Ventilate at best time');
+
+  // Good air (AQI 40)
+  const cleanAir = computeWhatToDoNow(40, 'good', {});
+  assert.equal(cleanAir.purifier.status, 'Not needed');
+  assert.equal(cleanAir.windows.status, 'Open');
+  assert.equal(cleanAir.mask.status, 'Not needed');
+  assert.equal(cleanAir.outdoor.status, 'OK');
 });

@@ -1,953 +1,1235 @@
 /**
  * Saans (साँस) - Main Client Application Coordinator
- * Single-Page Application (vanilla JS, mobile-first, a11y-ready)
+ *
+ * Coordinates state, navigation routing, API synchronization,
+ * and modular view rendering.
  */
 
-import { fetchAqi, fetchPlan, sendChatMessage } from './api.js';
-import { loadProfile, saveProfile, loadImpact, saveImpact, resetImpact } from './storage.js';
-import { initPlacesAutocomplete, getCurrentCoordinates } from './geo.js';
+import { state } from './state.js';
+import { fetchAqi, fetchPlan, sendChatMessage, fetchWeather, fetchCities } from './api.js';
 import {
-  DISCLAIMER,
-  estimateWalkShiftExposure,
-  estimateIndoorProtection,
-  estimateCommuteShift
-} from '/impact.js';
+  saveProfile,
+  logAction,
+  undoAction,
+  saveThemePreference
+} from './storage.js';
+import { initPlacesAutocomplete, getCurrentCoordinates, findKnownCity } from './geo.js';
+import { initIconSprite, icon } from './ui/icons.js';
+import { showToast } from './ui/toast.js';
+import {
+  buildVerdictText,
+  computeDaytimeWindows,
+  renderAqiGauge,
+  renderHeroCard,
+  renderAnswerTiles,
+  renderQuickActions,
+  renderForecastChart,
+  renderPollutantGrid,
+  renderMetroCitiesStrip,
+  renderWhatToDoNow,
+  renderWeatherCard,
+  renderCitiesComparison,
+  getRelativeTime,
+  renderMiniGauge
+} from './render/home.js';
+import { renderPlanScreen } from './render/plan.js';
+import { renderIndoorScreen, filterState, CURATED_HACKS } from './render/indoor.js';
+import { renderHouseholdSheet, householdStep, setHouseholdStep } from './render/household.js';
+import { renderChatScreen } from './render/chat.js';
+import { renderImpactScreen } from './render/impact.js';
+import { getCategoryFromAqi, estimateCigaretteEquivalent, computeWhatToDoNow } from '../impact.js';
 
-// Application State
-const state = {
-  activeTab: 'home',
-  location: {
-    name: 'Delhi NCR',
-    lat: 28.6139,
-    lng: 77.2090
+// Sample fallback AQI data when live network call fails
+const SAMPLE_AQI_DATA = {
+  aqi: 325,
+  scale: 'cpcb',
+  displayName: 'India NAQI (CPCB)',
+  category: 'Very poor',
+  band: 'very_poor',
+  dominantPollutant: 'pm25',
+  color: '#b91c1c',
+  bgColor: '#fee2e2',
+  pollutants: [
+    { code: 'pm25', displayName: 'PM2.5', concentration: { value: 195, units: 'µg/m³' } },
+    { code: 'pm10', displayName: 'PM10', concentration: { value: 310, units: 'µg/m³' } },
+    { code: 'no2', displayName: 'NO₂', concentration: { value: 68, units: 'µg/m³' } },
+    { code: 'o3', displayName: 'O₃', concentration: { value: 42, units: 'µg/m³' } }
+  ],
+  healthRecommendations: {
+    generalPopulation: 'Wear an N95 mask outdoors. Avoid morning jogs.'
   },
-  aqiData: null,
-  planData: null,
-  profile: loadProfile(),
-  impact: loadImpact(),
-  chatLang: 'en',
-  isGeneratingPlan: false,
-  isSendingChat: false
+  forecast: Array.from({ length: 24 }, (_, i) => {
+    const d = new Date();
+    d.setHours(d.getHours() + i, 0, 0, 0);
+    const hourVal = d.getHours();
+    // Diurnal inversion simulation: high in morning/night, lower 12-5 PM
+    let simAqi = 340;
+    if (hourVal >= 12 && hourVal <= 17) simAqi = 190;
+    else if (hourVal >= 6 && hourVal <= 10) simAqi = 380;
+    const cat = getCategoryFromAqi(simAqi, 'cpcb');
+    return {
+      hour: d.toISOString(),
+      aqi: simAqi,
+      scale: 'cpcb',
+      category: cat.label,
+      band: cat.band,
+      color: cat.color
+    };
+  }),
+  forecastError: false
 };
 
-// Curated Indoor Hacks grounded in Indian urban households (computed from transparent impact model)
-const CURATED_HACKS = [
-  {
-    room: 'living',
-    roomName: 'Living Room & Balcony',
-    title: 'The Damp-Towel Sliding Door Barrier',
-    tip: 'Place tightly rolled damp towels along the bottom tracks of balcony sliding doors and exterior door thresholds where winter drafts leak.',
-    cost: 'free',
-    costLabel: 'Free Hack',
-    impact: `~${estimateIndoorProtection(300, false, true).percentReduction}% infiltration reduction`,
-    explanation: estimateIndoorProtection(300, false, true).explanation
-  },
-  {
-    room: 'kitchen',
-    roomName: 'Kitchen',
-    title: 'Tadka & Frying Exhaust Isolation Protocol',
-    tip: 'Run the chimney or exhaust fan while preparing tadka, but strictly close doors connecting kitchen to living areas to prevent fine oil particulates from compounding outdoor smog.',
-    cost: 'free',
-    costLabel: 'Free Hack',
-    impact: 'Prevents indoor PM2.5 spikes exceeding 450 µg/m³',
-    explanation: 'Thermal oil aerosol confinement prevents localized PM2.5 compounding ambient winter smoke inside bedrooms.'
-  },
-  {
-    room: 'bedroom',
-    roomName: 'Bedroom',
-    title: 'Damp Microfiber Mopping (Never Dry Brooming)',
-    tip: 'Avoid dry jhadu (broom sweeping) which resuspends settled toxic fine dust into the breathing zone. Use a damp cloth or microfiber mop daily.',
-    cost: 'free',
-    costLabel: 'Free Hack',
-    impact: 'Avoids ~40% resuspension of settled heavy particulates',
-    explanation: 'Surface tension from damp water capillary action captures settled toxic particulate matter rather than aerosolizing it.'
-  },
-  {
-    room: 'bedroom',
-    roomName: 'Bedroom',
-    title: 'Overnight Air-Purified Sanctuary',
-    tip: 'If you have only one HEPA purifier, keep it in the bedroom with all doors and windows shut 30 minutes before sleep rather than in the large living room.',
-    cost: 'free',
-    costLabel: 'Free Hack',
-    impact: `~${estimateIndoorProtection(300, true, false).percentReduction}% indoor PM2.5 drop`,
-    explanation: estimateIndoorProtection(300, true, false).explanation
-  },
-  {
-    room: 'general',
-    roomName: 'General Home Care',
-    title: 'Zero Agarbatti & Mosquito Coil Rule',
-    tip: 'A single scented agarbatti or mosquito coil releases particulate matter equivalent to smoking 4-8 cigarettes in a sealed room. Switch to liquid electric diffusers or LED diyas.',
-    cost: 'free',
-    costLabel: 'Free Hack',
-    impact: 'Instantly removes severe indoor VOCs and soot',
-    explanation: 'Combustion elimination stops direct generation of indoor acrolein, formaldehyde, and carbon black.'
-  },
-  {
-    room: 'living',
-    roomName: 'Living Room',
-    title: 'Sansevieria (Snake Plant) Nighttime O₂ Boost',
-    tip: 'Snake plants (Sansevieria) and Areca palms release oxygen at night via Crassulacean Acid Metabolism and help bind airborne particulate surfaces.',
-    cost: 'low',
-    costLabel: 'Low Cost (₹150-₹300)',
-    impact: 'Natural humidity & mild indoor air polishing',
-    explanation: 'Foliage particulate deposition velocity increases slightly with broad-leaf indoor plants in closed spaces.'
-  },
-  {
-    room: 'general',
-    roomName: 'Entrance',
-    title: 'Outdoor Shoe & Jacket Decontamination Zone',
-    tip: 'Leave shoes and heavy winter jackets at the foyer entrance. Fine toxic dust from vehicle exhaust clings to outerwear and transfers to indoor carpets.',
-    cost: 'free',
-    costLabel: 'Free Hack',
-    impact: 'Stops tracking street soot into indoor living quarters',
-    explanation: 'Prevents drag-in transfer of coarse PM10 and brake dust from busy urban roadways.'
-  },
-  {
-    room: 'bedroom',
-    roomName: 'Bedroom / General',
-    title: 'DIY Fan + HEPA Filter Box',
-    tip: 'Fasten a standard replacement HEPA filter cartridge to the intake of an ordinary box fan or table fan using tape. Highly effective low-cost room filtration.',
-    cost: 'low',
-    costLabel: 'Low Cost (~₹800)',
-    impact: 'Delivers 60-70% of commercial purifier CADR',
-    explanation: 'Mechanical draw through dense HEPA microfiber captures 0.3-micron particles with minimal static pressure drop.'
-  }
-];
-
-// Fallback Plan for Instant First Render
-const FALLBACK_PLAN = {
+// Sample fallback Plan data when live network call fails
+const SAMPLE_PLAN_DATA = {
   routine: [
     {
-      time: '05:30 AM - 09:30 AM',
-      action: 'Keep all windows tightly shut; shift morning walks indoors',
-      why: 'Severe thermal inversion traps vehicular exhaust and biomass smoke within 50 meters of the ground during cold morning hours.',
+      time: '7:00 AM - 8:30 AM',
+      action: 'Morning ventilation lock & purifier boost',
+      why: 'Severe surface inversion traps winter smog. Keep windows locked and run purifier.',
       impact: {
         type: 'exposure',
-        value: 75,
-        unit: '% exposure reduction',
-        explanation: 'Avoids highest particulate concentration peak of the day'
+        value: 55,
+        unit: '% reduction',
+        description: 'Draft-sealed room blocks cold particulate settling during peak surface inversion.'
       }
     },
     {
-      time: '01:00 PM - 03:30 PM',
-      action: 'Best window for brief cross-ventilation and outdoor errands',
-      why: 'Solar heating warms the ground layer, expanding the planetary boundary layer and dispersing dense ground smog.',
+      time: '12:30 PM - 3:00 PM',
+      action: 'Daytime window for essential errands',
+      why: 'Solar heating disperses the boundary layer, bringing temporary AQI relief (~190).',
       impact: {
         type: 'exposure',
         value: 40,
-        unit: 'lower ambient PM2.5',
-        explanation: 'Lowest smog density window across 24 hours'
+        unit: '% lower PM2.5',
+        description: 'Running essential errands in afternoon reduces total inhaled particulate mass.'
       }
     },
     {
-      time: '05:30 PM - 07:30 PM',
-      action: 'Switch two-wheeler commute to Delhi Metro or wear a fitted N95',
-      why: 'Evening traffic peak combined with sinking temperatures rapidly spikes unburnt hydrocarbons and PM2.5.',
+      time: '6:00 PM - 8:00 PM',
+      action: 'Commute switch & evening window lock',
+      why: 'Evening rush hour and temperature drop cause sharp smog spike. Wear fitted N95.',
       impact: {
-        type: 'co2',
-        value: 3.2,
-        unit: 'kg CO₂ saved',
-        explanation: 'Mass transit avoids heavy direct soot inhalation in traffic jams'
-      }
-    },
-    {
-      time: '08:30 PM - 10:00 PM',
-      action: 'Seal balcony door draft with damp cloth; run bedroom purifier',
-      why: 'Nighttime temperature drops compress the air column, causing smoke from neighborhood fires to settle.',
-      impact: {
-        type: 'money',
-        value: 20,
-        unit: '% purifier efficiency gain',
-        explanation: 'Draft sealing prolongs HEPA filter lifespan'
+        type: 'exposure',
+        value: 95,
+        unit: '% less PM2.5 inhaled',
+        description: 'Certified N95 filter media with secure seal eliminates coarse and fine particulates.'
       }
     }
   ],
-  indoorHacks: CURATED_HACKS.slice(0, 4),
   alternatives: [
     {
-      instead: 'Morning outdoor jogging at 6:30 AM',
-      try: 'Indoor yoga, surya namaskar, or spot-jogging; walk at 2:00 PM if sunny',
-      impact: 'Spares bronchial airways from inhaling ~200 µg/m³ PM2.5 deeply'
+      insteadOf: 'Outdoor morning walk at 7:00 AM',
+      tryThis: 'Indoor yoga stretches or walk at 1:00 PM',
+      why: 'Morning physical exertion increases breathing volume 4x in peak surface smog.',
+      impact: 'Avoid ~250 ug/m3 inhaled during peak morning inversion'
     },
     {
-      instead: 'Open-air two-wheeler ride in peak evening smog',
-      try: 'Air-conditioned metro train or shared electric bus with N95 mask',
-      impact: 'Reduces direct toxic soot inhalation by up to 70%'
-    },
-    {
-      instead: 'Burning decorative scented candles and agarbatti in winter',
-      try: 'Warm water essential oil diffuser or closed-glass electric lanterns',
-      impact: 'Eliminates acute indoor benzene and formaldehyde emissions'
+      insteadOf: 'Solo car commute in evening rush hour',
+      tryThis: 'Take Delhi Metro or shared rapid transit',
+      why: 'Avoids slow idling exhaust plumes and cuts city vehicular emissions.',
+      impact: 'Save ~1.1 kg CO2 and 15 km tailpipe exposure'
     }
-  ],
-  doctorWarning: 'See a doctor immediately if any family member experiences persistent wheezing, breathlessness at rest, chest constriction, or blue discoloration around lips and fingertips.'
+  ]
 };
 
-/* ==========================================================================
-   Initialization
-   ========================================================================== */
-document.addEventListener('DOMContentLoaded', () => {
-  initNavigation();
-  initLocationHandlers();
-  initHouseholdForm();
-  initChat();
-  initImpactTracker();
-  initHacksFilter();
+/**
+ * Backward compatibility exports for integration tests
+ */
+export function initNavigation() {
+  bindTabs();
+}
 
-  // Load initial air quality data for default location
-  loadLocationData(state.location.lat, state.location.lng, state.location.name);
-});
+export function renderAqiRing(aqi, category, color) {
+  const cat = getCategoryFromAqi(aqi, 'cpcb');
+  return renderAqiGauge(aqi, { color: color || cat.color, bg: cat.bg, label: category || cat.label }, 'cpcb');
+}
 
-/* ==========================================================================
-   Navigation Controller (A11y tabs & keyboard navigation)
-   ========================================================================== */
-function initNavigation() {
-  const tabs = document.querySelectorAll('.nav-tab');
+/**
+ * Initializes Theme based on preference
+ */
+function initTheme() {
+  const pref = state.theme || 'system';
+  if (pref === 'dark') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  } else if (pref === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
 
-  tabs.forEach((tab, index) => {
-    tab.addEventListener('click', () => {
-      switchSection(tab.dataset.target);
-    });
-
-    // Keyboard navigation (Arrow keys)
-    tab.addEventListener('keydown', (e) => {
-      let targetIndex = null;
-      if (e.key === 'ArrowRight') {
-        targetIndex = (index + 1) % tabs.length;
-      } else if (e.key === 'ArrowLeft') {
-        targetIndex = (index - 1 + tabs.length) % tabs.length;
-      }
-      if (targetIndex !== null) {
-        tabs[targetIndex].focus();
-        switchSection(tabs[targetIndex].dataset.target);
-      }
-    });
-  });
-
-  // Hero button click leads to Today's Plan
-  const heroPlanBtn = document.getElementById('btn-hero-view-plan');
-  if (heroPlanBtn) {
-    heroPlanBtn.addEventListener('click', () => {
-      switchSection('plan');
-    });
+  const toggleBtn = document.getElementById('btn-theme-toggle');
+  if (toggleBtn) {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
+      (!document.documentElement.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    toggleBtn.innerHTML = isDark ? icon('sun', 20) : icon('moon', 20);
+    toggleBtn.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
   }
 }
 
-function switchSection(targetId) {
-  state.activeTab = targetId;
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  const isDarkNow = current === 'dark' || (!current && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const next = isDarkNow ? 'light' : 'dark';
 
-  document.querySelectorAll('.nav-tab').forEach((tab) => {
-    const isTarget = tab.dataset.target === targetId;
-    tab.classList.toggle('active', isTarget);
-    tab.setAttribute('aria-selected', isTarget ? 'true' : 'false');
+  document.documentElement.setAttribute('data-theme', next);
+  saveThemePreference(next);
+  state.theme = next;
+
+  const toggleBtn = document.getElementById('btn-theme-toggle');
+  if (toggleBtn) {
+    toggleBtn.innerHTML = next === 'dark' ? icon('sun', 20) : icon('moon', 20);
+    toggleBtn.setAttribute('aria-label', next === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  }
+}
+
+/**
+ * Navigation tabs router with roving tabindex and keyboard navigation
+ */
+function bindTabs() {
+  const tabLists = document.querySelectorAll('[role="tablist"]');
+  tabLists.forEach(tablist => {
+    const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', (e) => {
+        e.preventDefault();
+        const target = tab.getAttribute('data-tab-target');
+        navigateToTab(target);
+      });
+
+      tab.addEventListener('keydown', (e) => {
+        let newIndex = -1;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          newIndex = (index + 1) % tabs.length;
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          newIndex = (index - 1 + tabs.length) % tabs.length;
+        } else if (e.key === 'Home') {
+          e.preventDefault();
+          newIndex = 0;
+        } else if (e.key === 'End') {
+          e.preventDefault();
+          newIndex = tabs.length - 1;
+        }
+
+        if (newIndex >= 0) {
+          const nextTab = tabs[newIndex];
+          const target = nextTab.getAttribute('data-tab-target');
+          navigateToTab(target);
+          nextTab.focus();
+        }
+      });
+    });
   });
 
-  document.querySelectorAll('.app-section').forEach((sec) => {
-    const isTarget = sec.id === `section-${targetId}`;
-    sec.classList.toggle('active', isTarget);
-    if (isTarget) {
-      sec.removeAttribute('hidden');
-    } else {
-      sec.setAttribute('hidden', '');
+  window.addEventListener('hashchange', () => {
+    const hash = window.location.hash.replace('#', '');
+    if (['home', 'plan', 'indoor', 'ask', 'impact'].includes(hash)) {
+      navigateToTab(hash, false);
     }
   });
 
-  announceLive(`Navigated to ${targetId} section`);
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  // Initial tab from hash or default home
+  const initialHash = window.location.hash.replace('#', '');
+  if (['home', 'plan', 'indoor', 'ask', 'impact'].includes(initialHash)) {
+    navigateToTab(initialHash, false);
+  } else {
+    navigateToTab('home', false);
+  }
 }
 
-/* ==========================================================================
-   Location Management
-   ========================================================================== */
-function initLocationHandlers() {
-  // City Presets
-  const chipButtons = document.querySelectorAll('.city-chips .chip-btn');
-  chipButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      chipButtons.forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
+export function navigateToTab(tabName, updateHash = true) {
+  state.activeTab = tabName;
+  if (updateHash) {
+    window.location.hash = tabName;
+  }
 
-      const lat = parseFloat(btn.dataset.lat);
-      const lng = parseFloat(btn.dataset.lng);
-      const name = btn.dataset.name;
-      loadLocationData(lat, lng, name);
+  // Update active state and roving tabindex on nav buttons
+  document.querySelectorAll('[data-tab-target]').forEach(btn => {
+    const isMatch = btn.getAttribute('data-tab-target') === tabName;
+    btn.classList.toggle('active-tab', isMatch);
+    btn.setAttribute('aria-selected', isMatch ? 'true' : 'false');
+    btn.setAttribute('tabindex', isMatch ? '0' : '-1');
+  });
+
+  // Update visible pane
+  document.querySelectorAll('.tab-pane').forEach(pane => {
+    const isMatch = pane.id === `pane-${tabName}`;
+    pane.classList.toggle('active-pane', isMatch);
+  });
+
+  // Render content if needed
+  if (tabName === 'plan' && !state.planData && !state.isLoadingPlan) {
+    loadPlan();
+  } else if (tabName === 'indoor') {
+    renderIndoorView();
+  } else if (tabName === 'ask') {
+    renderChatView();
+  } else if (tabName === 'impact') {
+    renderImpactView();
+  }
+}
+
+/**
+ * Loads AQI data from backend API
+ */
+export async function loadAqiData() {
+  const homeContainer = document.getElementById('pane-home');
+  if (!homeContainer) return;
+
+  state.isLoadingAqi = true;
+  state.aqiError = null;
+
+  try {
+    const [aqiResult, weatherResult, citiesResult] = await Promise.allSettled([
+      fetchAqi(state.lat, state.lng),
+      fetchWeather(state.lat, state.lng),
+      fetchCities()
+    ]);
+
+    if (aqiResult.status === 'fulfilled') {
+      state.aqiData = aqiResult.value;
+      state.isSampleData = false;
+    } else {
+      console.warn('[Saans] Live AQI fetch failed. Using honest sample data:', aqiResult.reason?.message);
+      state.aqiData = SAMPLE_AQI_DATA;
+      state.isSampleData = true;
+      state.aqiError = aqiResult.reason?.message;
+    }
+
+    if (weatherResult.status === 'fulfilled') {
+      state.weatherData = weatherResult.value;
+    } else {
+      // Hide weather card quietly if request fails
+      state.weatherData = null;
+    }
+
+    if (citiesResult.status === 'fulfilled') {
+      state.citiesData = citiesResult.value;
+    } else {
+      state.citiesData = [];
+    }
+
+    state.aqiUpdatedAt = Date.now();
+  } finally {
+    state.isLoadingAqi = false;
+    renderHomeView();
+  }
+}
+
+/**
+ * Renders the Home View
+ */
+function renderHomeView() {
+  const container = document.getElementById('pane-home');
+  if (!container) return;
+
+  const aqiObj = state.aqiData || SAMPLE_AQI_DATA;
+  const aqiVal = aqiObj.aqi || 300;
+  const bandInfo = getCategoryFromAqi(aqiVal, aqiObj.scale || 'cpcb');
+  const daytimeWindows = computeDaytimeWindows(aqiObj.forecast || []);
+  const verdict = buildVerdictText(aqiVal, bandInfo.band, state.profile, daytimeWindows.bestWindow);
+
+  // Derive PM2.5 for cigarette equivalent
+  const pm25Entry = aqiObj.pollutants?.find(p => p.code?.toLowerCase() === 'pm25');
+  const pm25Conc = pm25Entry?.concentration?.value ?? (aqiVal * 0.6);
+  const cigarette = estimateCigaretteEquivalent(pm25Conc);
+
+  // Compute what to do now actions
+  const whatToDo = computeWhatToDoNow(aqiVal, bandInfo.band, state.profile, daytimeWindows.bestWindow);
+
+  // Update header city trigger text
+  const cityTriggerText = document.getElementById('header-city-name');
+  if (cityTriggerText) {
+    cityTriggerText.textContent = state.profile.city || state.currentCity;
+  }
+
+  const sampleBannerMarkup = state.isSampleData ? `
+    <div class="sample-data-banner" role="status">
+      ${icon('info', 18)}
+      <span>Showing sample data. Live station sensor at this location is currently offline.</span>
+    </div>
+  ` : '';
+
+  const metroStripMarkup = renderMetroCitiesStrip(state.citiesData, state.profile.city || state.currentCity);
+  const heroCardMarkup = renderHeroCard(aqiVal, bandInfo, verdict, state.aqiUpdatedAt || Date.now(), aqiObj.scale || 'cpcb');
+  const pollutantGridMarkup = renderPollutantGrid(aqiObj.pollutants, aqiObj.dominantPollutant);
+  const weatherCardMarkup = renderWeatherCard(state.weatherData);
+  const answerTilesMarkup = renderAnswerTiles(aqiVal, bandInfo, daytimeWindows);
+  const whatToDoMarkup = renderWhatToDoNow(whatToDo, cigarette);
+  const forecastChartMarkup = renderForecastChart(aqiObj.forecast, daytimeWindows.bestWindowHours, daytimeWindows);
+  const quickActionsMarkup = renderQuickActions(aqiVal, state.profile);
+  const compareCitiesMarkup = renderCitiesComparison(state.citiesData, state.profile.city || state.currentCity);
+
+  container.innerHTML = `
+    ${sampleBannerMarkup}
+    ${metroStripMarkup}
+
+    <div class="home-top-grid">
+      <div class="home-top-main">
+        ${heroCardMarkup}
+        ${pollutantGridMarkup}
+      </div>
+      <div class="home-top-side">
+        ${weatherCardMarkup}
+        ${answerTilesMarkup}
+      </div>
+    </div>
+
+    ${whatToDoMarkup}
+    ${forecastChartMarkup}
+    ${quickActionsMarkup}
+    ${compareCitiesMarkup}
+  `;
+
+  // Bind NAQI info button
+  const naqiBtn = document.getElementById('btn-naqi-info');
+  if (naqiBtn) {
+    naqiBtn.addEventListener('click', () => {
+      showToast('India NAQI (CPCB): 0-50 Good, 51-100 Satisfactory, 101-200 Moderate, 201-300 Poor, 301-400 Very Poor, 401-500 Severe.', 'info');
+    });
+  }
+
+  // City switching handler
+  const handleCitySwitch = (cityName, lat, lng) => {
+    state.profile.city = cityName;
+    state.currentCity = cityName;
+    state.lat = Number(lat);
+    state.lng = Number(lng);
+    saveProfile(state.profile);
+    loadAqiData();
+    showToast(`Switched location to ${cityName}`, 'info');
+  };
+
+  container.querySelectorAll('.metro-city-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const city = chip.getAttribute('data-city');
+      const lat = chip.getAttribute('data-lat');
+      const lng = chip.getAttribute('data-lng');
+      if (city && lat && lng) handleCitySwitch(city, lat, lng);
     });
   });
 
-  // Use Current Location (Near Me)
-  const btnNearMe = document.getElementById('btn-use-location');
-  if (btnNearMe) {
-    btnNearMe.addEventListener('click', async () => {
-      try {
-        btnNearMe.disabled = true;
-        btnNearMe.classList.add('loading');
-        announceLive('Requesting your current GPS coordinates...');
-        const coords = await getCurrentCoordinates();
-        chipButtons.forEach((b) => b.classList.remove('active'));
-        loadLocationData(coords.lat, coords.lng, 'My Current Location');
-      } catch (err) {
-        showStatusBanner(err.message, 'warning');
-      } finally {
-        btnNearMe.disabled = false;
-        btnNearMe.classList.remove('loading');
+  container.querySelectorAll('.city-compare-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const city = card.getAttribute('data-city');
+      const lat = card.getAttribute('data-lat');
+      const lng = card.getAttribute('data-lng');
+      if (city && lat && lng) handleCitySwitch(city, lat, lng);
+    });
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        card.click();
+      }
+    });
+  });
+
+  // Cigarette disclosure button
+  const cigToggle = document.getElementById('btn-cigarette-toggle');
+  const cigPanel = document.getElementById('cigarette-disclosure-panel');
+  if (cigToggle && cigPanel) {
+    cigToggle.addEventListener('click', () => {
+      const isExpanded = cigToggle.getAttribute('aria-expanded') === 'true';
+      cigToggle.setAttribute('aria-expanded', String(!isExpanded));
+      cigPanel.hidden = isExpanded;
+      const chevron = cigToggle.querySelector('.disclosure-chevron');
+      if (chevron) {
+        chevron.style.transform = isExpanded ? 'rotate(0deg)' : 'rotate(180deg)';
       }
     });
   }
 
-  // Places Autocomplete
-  const searchInput = document.getElementById('places-input');
-  if (searchInput) {
-    initPlacesAutocomplete(searchInput, (selected) => {
-      chipButtons.forEach((b) => b.classList.remove('active'));
-      loadLocationData(selected.lat, selected.lng, selected.name);
+  // Bind Quick action Done buttons
+  container.querySelectorAll('.quick-action-done-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const title = decodeURIComponent(btn.getAttribute('data-title') || 'Quick action');
+      const type = btn.getAttribute('data-type') || 'exposure';
+      const hours = Number(btn.getAttribute('data-hours')) || 1.0;
+      const km = Number(btn.getAttribute('data-km')) || 15;
+      const explanation = decodeURIComponent(btn.getAttribute('data-explanation') || '');
+
+      logAction({
+        title,
+        type,
+        hoursAvoided: type === 'exposure' ? hours : 0,
+        co2SavedKg: type === 'co2' ? +((km * 0.075).toFixed(2)) : 0,
+        moneySavedInr: type === 'co2' ? Math.round(km * 2.5) : 0,
+        explanation
+      });
+
+      btn.classList.add('is-done');
+      btn.innerHTML = `${icon('check', 16)} Done`;
+      btn.disabled = true;
+      showToast(`Logged: "${title}" added to your weekly impact!`, 'success');
+    });
+  });
+
+  bindForecastInteractive();
+}
+
+/**
+ * Interactive scrubber and keyboard navigation for smooth forecast chart
+ */
+function bindForecastInteractive() {
+  const container = document.getElementById('forecast-strip');
+  if (!container) return;
+
+  const scrollContainer = document.getElementById('forecast-scroll-container');
+  const hitbox = container.querySelector('.forecast-chart-hitbox');
+  const svg = container.querySelector('.forecast-smooth-chart-svg');
+  const scrubberLine = document.getElementById('forecast-scrubber-line');
+  const scrubberKnob = document.getElementById('forecast-scrubber-knob');
+  const tooltipCard = document.getElementById('forecast-tooltip-card');
+  const liveRegion = document.getElementById('forecast-scrubber-live');
+
+  const tooltipTime = document.getElementById('tooltip-time');
+  const tooltipDate = document.getElementById('tooltip-date');
+  const tooltipGaugeSlot = document.getElementById('tooltip-gauge-slot');
+  const tooltipAqiNum = document.getElementById('tooltip-aqi-num');
+  const tooltipBandLabel = document.getElementById('tooltip-band-label');
+
+  const forecast = state.aqiData?.forecast || [];
+  if (!forecast.length || !hitbox || !svg) return;
+
+  const numHours = forecast.length;
+  const padLeft = 48;
+  const padRight = 30;
+  const padTop = 32;
+  const padBottom = 38;
+  const chartHeight = 220;
+  const minWidthPerHour = 36;
+  const chartWidth = Math.max(864, numHours * minWidthPerHour);
+  const plotWidth = chartWidth - padLeft - padRight;
+  const plotHeight = chartHeight - padTop - padBottom;
+  const plotBottom = padTop + plotHeight;
+
+  const aqiValues = forecast.map(f => f.aqi || 0);
+  const maxAqi = Math.max(300, ...aqiValues);
+  const yMax = Math.ceil((maxAqi + 40) / 50) * 50;
+  const yMin = 0;
+
+  // Compute point positions
+  const points = forecast.map((item, idx) => {
+    const x = padLeft + (idx / (numHours - 1)) * plotWidth;
+    const aqi = Math.max(0, Math.min(yMax, item.aqi || 0));
+    const y = plotBottom - ((aqi - yMin) / (yMax - yMin)) * plotHeight;
+    return { x, y, aqi: item.aqi || 0, hour: item.hour, idx };
+  });
+
+  const updateScrubber = (idx) => {
+    const clampedIdx = Math.max(0, Math.min(numHours - 1, idx));
+    const point = points[clampedIdx];
+    const cat = getCategoryFromAqi(point.aqi, 'cpcb');
+    const d = new Date(point.hour);
+    const timeStr = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+    if (scrubberLine) {
+      scrubberLine.setAttribute('x1', point.x.toFixed(1));
+      scrubberLine.setAttribute('x2', point.x.toFixed(1));
+    }
+    if (scrubberKnob) {
+      scrubberKnob.setAttribute('cx', point.x.toFixed(1));
+      scrubberKnob.setAttribute('cy', point.y.toFixed(1));
+      scrubberKnob.setAttribute('fill', cat.color);
+    }
+    if (tooltipCard) {
+      const rect = svg.getBoundingClientRect();
+      const scaleX = rect.width / chartWidth;
+      const scaleY = rect.height / chartHeight;
+      const screenX = point.x * scaleX;
+      const screenY = point.y * scaleY;
+      const tooltipWidth = 145;
+      const leftGutter = padLeft * scaleX;
+      const rightBoundary = rect.width - padRight * scaleX;
+
+      let left = screenX - tooltipWidth / 2;
+      // Never cover y-axis labels on the left: flip to the right of the knob
+      if (left < leftGutter + 8) {
+        left = screenX + 16;
+      } else if (left + tooltipWidth > rightBoundary) {
+        // Flip to the left of the knob near right edge
+        left = screenX - tooltipWidth - 16;
+      }
+      if (left < leftGutter + 4) left = leftGutter + 4;
+      if (left + tooltipWidth > rect.width) left = rect.width - tooltipWidth - 6;
+
+      let top = screenY - 82;
+      if (top < 8) top = screenY + 16;
+      tooltipCard.style.left = `${left.toFixed(0)}px`;
+      tooltipCard.style.top = `${top.toFixed(0)}px`;
+    }
+    if (tooltipTime) tooltipTime.textContent = timeStr;
+    if (tooltipDate) tooltipDate.textContent = dateStr;
+    if (tooltipAqiNum) tooltipAqiNum.textContent = String(point.aqi);
+    if (tooltipBandLabel) {
+      tooltipBandLabel.textContent = cat.label;
+    }
+    if (tooltipGaugeSlot) {
+      tooltipGaugeSlot.innerHTML = renderMiniGauge(point.aqi, cat.color, 36);
+    }
+    if (liveRegion) {
+      liveRegion.textContent = `Forecast at ${timeStr}: AQI ${point.aqi}, ${cat.label}`;
+    }
+    hitbox.setAttribute('aria-valuenow', String(clampedIdx));
+    hitbox.setAttribute('aria-valuetext', `${point.aqi} AQI, ${cat.label} at ${timeStr}`);
+  };
+
+  const getIndexFromPointerEvent = (e) => {
+    const rect = svg.getBoundingClientRect();
+    const scaleX = chartWidth / rect.width;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const svgX = (clientX - rect.left) * scaleX;
+    const clampedSvgX = Math.max(padLeft, Math.min(chartWidth - padRight, svgX));
+    const ratio = (clampedSvgX - padLeft) / plotWidth;
+    return Math.round(ratio * (numHours - 1));
+  };
+
+  let isScrubbing = false;
+
+  const showTooltip = () => {
+    if (tooltipCard) tooltipCard.style.display = 'block';
+  };
+
+  const hideTooltip = () => {
+    if (!isScrubbing && tooltipCard) tooltipCard.style.display = 'none';
+  };
+
+  const onPointerDown = (e) => {
+    isScrubbing = true;
+    showTooltip();
+    updateScrubber(getIndexFromPointerEvent(e));
+  };
+
+  const onPointerMove = (e) => {
+    if (!isScrubbing && e.type !== 'mousemove') return;
+    showTooltip();
+    updateScrubber(getIndexFromPointerEvent(e));
+  };
+
+  const onPointerUp = () => {
+    isScrubbing = false;
+  };
+
+  hitbox.addEventListener('mousedown', onPointerDown);
+  hitbox.addEventListener('mousemove', onPointerMove);
+  hitbox.addEventListener('mouseenter', showTooltip);
+  hitbox.addEventListener('mouseleave', hideTooltip);
+  window.addEventListener('mouseup', onPointerUp);
+
+  hitbox.addEventListener('touchstart', onPointerDown, { passive: true });
+  hitbox.addEventListener('touchmove', onPointerMove, { passive: true });
+  window.addEventListener('touchend', onPointerUp);
+
+  hitbox.addEventListener('focus', () => {
+    showTooltip();
+    const currentVal = parseInt(hitbox.getAttribute('aria-valuenow') || '0', 10);
+    updateScrubber(currentVal);
+  });
+  hitbox.addEventListener('blur', hideTooltip);
+
+  hitbox.addEventListener('keydown', (e) => {
+    showTooltip();
+    const currentVal = parseInt(hitbox.getAttribute('aria-valuenow') || '0', 10);
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      updateScrubber(currentVal - 1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      updateScrubber(currentVal + 1);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      updateScrubber(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      updateScrubber(numHours - 1);
+    }
+  });
+
+  // Mobile scroll centering on load
+  if (scrollContainer) {
+    const currentKnob = scrollContainer.querySelector('.forecast-current-knob');
+    if (currentKnob) {
+      const knobX = parseFloat(currentKnob.getAttribute('cx') || '0');
+      const targetScroll = Math.max(0, knobX - scrollContainer.clientWidth / 2);
+      scrollContainer.scrollTo({ left: targetScroll, behavior: 'smooth' });
+    }
+  }
+}
+
+/**
+ * Loads Today's Plan from Gemini backend
+ */
+export async function loadPlan() {
+  state.isLoadingPlan = true;
+  renderPlanView();
+
+  try {
+    const aqiVal = state.aqiData ? state.aqiData.aqi : 300;
+    const daytimeWindows = computeDaytimeWindows(state.aqiData?.forecast || []);
+    const data = await fetchPlan(state.profile, aqiVal, daytimeWindows);
+    state.planData = data;
+    state.planGeneratedAt = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  } catch (err) {
+    console.warn('[Saans] Gemini plan fetch failed, using sample plan data:', err.message);
+    state.planData = SAMPLE_PLAN_DATA;
+    state.planGeneratedAt = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  } finally {
+    state.isLoadingPlan = false;
+    renderPlanView();
+  }
+}
+
+/**
+ * Renders Today's Plan View
+ */
+function renderPlanView() {
+  const container = document.getElementById('pane-plan');
+  if (!container) return;
+
+  container.innerHTML = renderPlanScreen(state.planData, {
+    city: state.profile.city || state.currentCity,
+    aqi: state.aqiData?.aqi || 300,
+    profile: state.profile,
+    generatedAt: state.planGeneratedAt,
+    isLoading: state.isLoadingPlan
+  });
+
+  const regenBtn = document.getElementById('btn-regenerate-plan');
+  if (regenBtn) {
+    regenBtn.addEventListener('click', () => loadPlan());
+  }
+
+  // Bind Done action buttons
+  container.querySelectorAll('.action-done-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const title = decodeURIComponent(btn.getAttribute('data-title') || 'Completed action');
+      const type = btn.getAttribute('data-type') || 'exposure';
+      const hours = Number(btn.getAttribute('data-hours')) || 1.0;
+      const km = Number(btn.getAttribute('data-km')) || 15;
+      const explanation = decodeURIComponent(btn.getAttribute('data-explanation') || '');
+
+      logAction({
+        title,
+        type,
+        hoursAvoided: type === 'exposure' ? hours : 0,
+        co2SavedKg: type === 'co2' ? +((km * 0.075).toFixed(2)) : 0,
+        moneySavedInr: type === 'co2' ? Math.round(km * 2.5) : 0,
+        explanation
+      });
+
+      btn.classList.add('is-done');
+      btn.innerHTML = `${icon('check', 16)} Completed!`;
+      btn.disabled = true;
+      showToast(`Logged: "${title}" added to your weekly impact!`, 'success');
+    });
+  });
+}
+
+/**
+ * Renders Indoor Hacks View
+ */
+function renderIndoorView() {
+  const container = document.getElementById('pane-indoor');
+  if (!container) return;
+
+  container.innerHTML = renderIndoorScreen(CURATED_HACKS);
+
+  // Bind room & cost filter chips
+  container.querySelectorAll('.filter-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const filterType = btn.getAttribute('data-filter-type');
+      const val = btn.getAttribute('data-filter-value');
+      if (filterType === 'room') filterState.room = val;
+      if (filterType === 'cost') filterState.cost = val;
+      renderIndoorView();
+    });
+  });
+
+  // Item 11: Bind "Why this works" disclosure buttons with rotating chevron
+  container.querySelectorAll('.hack-disclosure-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const isExpanded = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
+      const targetId = btn.getAttribute('aria-controls');
+      const targetBody = document.getElementById(targetId);
+      if (targetBody) {
+        targetBody.hidden = isExpanded;
+      }
+    });
+  });
+
+  // Bind "I did this" buttons
+  container.querySelectorAll('.btn-hack-done').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const title = decodeURIComponent(btn.getAttribute('data-title') || 'Indoor Hack');
+      const actionType = btn.getAttribute('data-action-type');
+
+      logAction({
+        title,
+        type: 'exposure',
+        hoursAvoided: actionType === 'purifier' ? 2.0 : 1.0,
+        co2SavedKg: 0,
+        moneySavedInr: 0,
+        explanation: 'Indoor mitigation action reduced direct PM2.5 infiltration.'
+      });
+
+      btn.classList.add('is-done');
+      btn.innerHTML = `${icon('check', 14)} Logged`;
+      btn.disabled = true;
+      showToast(`Great work! "${title}" added to weekly impact.`, 'success');
+    });
+  });
+}
+
+/**
+ * Renders Ask Saans Chat View
+ */
+function renderChatView() {
+  const container = document.getElementById('pane-ask');
+  if (!container) return;
+
+  container.innerHTML = renderChatScreen(state.chatMessages, {
+    currentLang: state.chatLanguage,
+    aqi: state.aqiData?.aqi || 300,
+    profile: state.profile,
+    isSending: state.isSendingChat
+  });
+
+  // Bind Language buttons
+  container.querySelectorAll('.lang-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.chatLanguage = btn.getAttribute('data-lang') || 'en';
+      renderChatView();
+    });
+  });
+
+  // Bind suggested question chips
+  container.querySelectorAll('.suggestion-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const prompt = decodeURIComponent(chip.getAttribute('data-prompt') || '');
+      handleSendChatMessage(prompt);
+    });
+  });
+
+  // Form submit & auto-grow textarea
+  const form = document.getElementById('chat-form');
+  const textarea = document.getElementById('chat-input-textarea');
+  const charCounter = document.getElementById('chat-char-counter');
+
+  if (textarea) {
+    textarea.addEventListener('input', () => {
+      textarea.style.height = 'auto';
+      textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+      if (charCounter) {
+        charCounter.textContent = `${textarea.value.length} / 500`;
+      }
     });
 
-    // Fallback: search on Enter
-    searchInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        const query = searchInput.value.trim();
-        if (query) {
-          announceLive(`Searching air quality for ${query}...`);
-          // For cities, map common names if Autocomplete didn't trigger
-          const matched = findCityCoords(query);
-          if (matched) {
-            loadLocationData(matched.lat, matched.lng, matched.name);
-          } else {
-            showStatusBanner(`Showing estimated regional smog data for ${query}.`, 'info');
-            loadLocationData(state.location.lat, state.location.lng, query);
-          }
+        if (form) form.requestSubmit();
+      }
+    });
+  }
+
+  if (form) {
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = textarea?.value.trim();
+      if (text) {
+        handleSendChatMessage(text);
+      }
+    });
+  }
+
+  // Scroll to bottom
+  const msgsArea = document.getElementById('chat-messages-container');
+  if (msgsArea) {
+    msgsArea.scrollTop = msgsArea.scrollHeight;
+  }
+}
+
+async function handleSendChatMessage(text) {
+  if (!text || state.isSendingChat) return;
+
+  const nowStr = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  state.chatMessages.push({
+    role: 'user',
+    text,
+    time: nowStr,
+    lang: state.chatLanguage
+  });
+
+  state.isSendingChat = true;
+  renderChatView();
+
+  try {
+    const res = await sendChatMessage(text, state.profile, state.aqiData?.aqi || 300, state.chatLanguage);
+    state.chatMessages.push({
+      role: 'assistant',
+      text: res.reply,
+      time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+      lang: res.lang || state.chatLanguage
+    });
+  } catch (_err) {
+    state.chatMessages.push({
+      role: 'assistant',
+      text: 'Sorry, I could not connect to the advisory service. Please check your connection and try again.',
+      time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+      lang: 'en'
+    });
+  } finally {
+    state.isSendingChat = false;
+    renderChatView();
+  }
+}
+
+/**
+ * Renders Impact Tracker View
+ */
+function renderImpactView() {
+  const container = document.getElementById('pane-impact');
+  if (!container) return;
+
+  container.innerHTML = renderImpactScreen();
+
+  // Bind Undo buttons
+  container.querySelectorAll('.btn-undo-action').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-undo-id');
+      if (id) {
+        undoAction(id);
+        renderImpactView();
+        showToast('Action removed from weekly log.', 'info');
+      }
+    });
+  });
+
+  // Item 16: Bind See Today's Plan button
+  const seePlanBtn = container.querySelector('#btn-see-today-plan');
+  if (seePlanBtn) {
+    seePlanBtn.addEventListener('click', () => {
+      navigateToTab('plan');
+    });
+  }
+}
+
+let householdOpenerElement = null;
+
+function closeHouseholdSheet() {
+  const overlay = document.getElementById('household-modal');
+  if (!overlay || !overlay.classList.contains('sheet-open')) return;
+  overlay.classList.remove('sheet-open');
+  overlay.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = ''; // Item 17: restore page scroll
+  if (householdOpenerElement && typeof householdOpenerElement.focus === 'function') {
+    householdOpenerElement.focus(); // Item 17: return focus to opening button
+  }
+  householdOpenerElement = null;
+}
+
+/**
+ * Household Sheet Modal Logic
+ * Item 17: Focus trap, close on Escape and backdrop click, return focus to opener, disable page scroll
+ */
+function bindHouseholdModal() {
+  const overlay = document.getElementById('household-modal');
+  const openButtons = document.querySelectorAll('.btn-open-household');
+  const cityTrigger = document.getElementById('btn-header-city');
+
+  const openSheet = (e) => {
+    if (!overlay) return;
+    householdOpenerElement = e?.currentTarget || document.activeElement;
+    setHouseholdStep(1);
+    overlay.innerHTML = renderHouseholdSheet(state.profile);
+    overlay.classList.add('sheet-open');
+    overlay.setAttribute('aria-hidden', 'false');
+    document.body.style.overflow = 'hidden'; // Item 17: disable page scroll
+    bindHouseholdSheetEvents();
+
+    // Focus first interactive element inside sheet
+    const focusable = overlay.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    if (focusable.length > 0) {
+      focusable[0].focus();
+    }
+  };
+
+  openButtons.forEach(btn => btn.addEventListener('click', openSheet));
+  if (cityTrigger) cityTrigger.addEventListener('click', openSheet);
+
+  // Item 17: Focus trap inside dialog and close on Escape
+  overlay?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeHouseholdSheet();
+      return;
+    }
+
+    if (e.key === 'Tab') {
+      const focusable = Array.from(overlay.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )).filter(el => el.offsetParent !== null);
+
+      if (focusable.length === 0) {
+        e.preventDefault();
+        return;
+      }
+
+      const firstEl = focusable[0];
+      const lastEl = focusable[focusable.length - 1];
+
+      if (e.shiftKey) {
+        if (document.activeElement === firstEl || !overlay.contains(document.activeElement)) {
+          e.preventDefault();
+          lastEl.focus();
+        }
+      } else {
+        if (document.activeElement === lastEl || !overlay.contains(document.activeElement)) {
+          e.preventDefault();
+          firstEl.focus();
+        }
+      }
+    }
+  });
+
+  // Item 17: Close on backdrop click
+  overlay?.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      closeHouseholdSheet();
+    }
+  });
+}
+
+function bindHouseholdSheetEvents() {
+  const overlay = document.getElementById('household-modal');
+  if (!overlay) return;
+
+  const closeBtn = document.getElementById('btn-close-household');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      closeHouseholdSheet();
+    });
+  }
+
+  // Setup Places Autocomplete on step 1 search input
+  const cityInput = document.getElementById('household-city-search');
+  const placesContainer = document.getElementById('places-autocomplete-container');
+  const searchError = document.getElementById('city-search-error');
+
+  if (cityInput) {
+    initPlacesAutocomplete(
+      placesContainer || cityInput,
+      ({ lat, lng, name }) => {
+        state.profile.city = name;
+        state.profile.lat = lat;
+        state.profile.lng = lng;
+        state.lat = lat;
+        state.lng = lng;
+        state.currentCity = name;
+        if (cityInput) cityInput.value = name;
+        if (searchError) searchError.style.display = 'none';
+      },
+      (errMsg) => {
+        if (searchError) {
+          searchError.textContent = errMsg;
+          searchError.style.display = 'block';
+        }
+      }
+    );
+
+    cityInput.addEventListener('change', () => {
+      const match = findKnownCity(cityInput.value);
+      if (match) {
+        state.profile.city = match.name;
+        state.profile.lat = match.lat;
+        state.profile.lng = match.lng;
+        state.lat = match.lat;
+        state.lng = match.lng;
+        state.currentCity = match.name;
+        if (searchError) searchError.style.display = 'none';
+      } else if (cityInput.value.trim() && !state.profile.city.toLowerCase().includes(cityInput.value.trim().toLowerCase())) {
+        if (searchError) {
+          searchError.textContent = 'City not found. Please choose from suggested cities or use your location.';
+          searchError.style.display = 'block';
         }
       }
     });
   }
-}
 
-function findCityCoords(name) {
-  const q = name.toLowerCase();
-  const presets = [
-    { name: 'Delhi NCR', lat: 28.6139, lng: 77.2090, match: ['delhi', 'ncr', 'gurgaon', 'gurugram', 'faridabad', 'ghaziabad'] },
-    { name: 'Noida', lat: 28.5355, lng: 77.3910, match: ['noida', 'greater noida'] },
-    { name: 'Mumbai', lat: 19.0760, lng: 72.8777, match: ['mumbai', 'bombay', 'thane', 'navi mumbai'] },
-    { name: 'Kolkata', lat: 22.5726, lng: 88.3639, match: ['kolkata', 'calcutta', 'howrah'] },
-    { name: 'Lucknow', lat: 26.8467, lng: 80.9462, match: ['lucknow'] },
-    { name: 'Patna', lat: 25.6127, lng: 85.1589, match: ['patna'] },
-    { name: 'Kanpur', lat: 26.4499, lng: 80.3319, match: ['kanpur'] }
-  ];
-  return presets.find((p) => p.match.some((m) => q.includes(m)));
-}
-
-async function loadLocationData(lat, lng, name) {
-  state.location = { lat, lng, name };
-  document.getElementById('active-location-name').textContent = name;
-  hideStatusBanner();
-
-  // Optimistic UI loading state
-  document.getElementById('aqi-hero-value').textContent = '...';
-  document.getElementById('aqi-hero-category').textContent = 'Fetching...';
-  document.getElementById('forecast-strip').innerHTML = '<div class="forecast-skeleton">Loading hourly smog forecast...</div>';
-
-  try {
-    const data = await fetchAqi(lat, lng);
-    state.aqiData = data;
-    renderAqiRing(data);
-    renderForecast(data.forecast || []);
-    announceLive(`Air Quality in ${name} is ${data.aqi}, Category: ${data.category}`);
-
-    // Regenerate or refresh plan with latest AQI data
-    triggerPlanGeneration();
-  } catch (err) {
-    console.warn('[Saans] Live AQI fetch failed, falling back to cached or synthetic winter estimate:', err);
-    // Graceful offline/missing key fallback for seamless presentation
-    const fallbackAqi = {
-      aqi: 342,
-      category: 'Very Poor',
-      dominantPollutant: 'pm25',
-      color: '#CC0033',
-      healthRecommendations: {
-        generalPopulation: 'Wear an N95 mask outdoors. Avoid prolonged exertion during morning inversions.',
-        elderly: 'Stay indoors with doors and windows sealed. Keep emergency rescue inhalers accessible.'
-      },
-      forecast: generateSyntheticForecast()
-    };
-    state.aqiData = fallbackAqi;
-    renderAqiRing(fallbackAqi);
-    renderForecast(fallbackAqi.forecast);
-    renderPlan(FALLBACK_PLAN);
-
-    if (err.status === 503 || err.message.includes('not configured')) {
-      showStatusBanner('Google Air Quality API key is not yet configured in server environment. Displaying representative winter smog metrics for India.', 'info');
-    } else {
-      showStatusBanner(`Notice: ${err.message}. Using latest regional estimates.`, 'warning');
-    }
-  }
-}
-
-/* ==========================================================================
-   AQI Ring & Metrics Renderer
-   ========================================================================== */
-function renderAqiRing(data) {
-  const { aqi, category, dominantPollutant, healthRecommendations } = data;
-
-  const valueEl = document.getElementById('aqi-hero-value');
-  const catEl = document.getElementById('aqi-hero-category');
-  const dominantEl = document.getElementById('aqi-hero-dominant');
-  const healthText = document.getElementById('aqi-health-text');
-  const meterCircle = document.getElementById('aqi-meter-circle');
-
-  valueEl.textContent = aqi;
-  catEl.textContent = category;
-
-  // Pollutant formatting
-  const pMap = {
-    pm25: 'PM2.5 (Fine Particulate Matter)',
-    pm10: 'PM10 (Inhalable Coarse Dust)',
-    no2: 'NO₂ (Traffic Nitrogen Dioxide)',
-    o3: 'O₃ (Ground-Level Ozone)',
-    so2: 'SO₂ (Sulfur Dioxide)'
-  };
-  dominantEl.textContent = pMap[dominantPollutant?.toLowerCase()] || dominantPollutant || 'PM2.5';
-
-  // Category Color Token Mapping (WCAG High-Contrast)
-  const severityColors = {
-    good: { stroke: '#15803D', bg: '#DCFCE7', text: '#15803D' },
-    satisfactory: { stroke: '#4D7C0F', bg: '#ECFCCB', text: '#4D7C0F' },
-    moderate: { stroke: '#B45309', bg: '#FEF3C7', text: '#B45309' },
-    poor: { stroke: '#C2410C', bg: '#FFEDD5', text: '#C2410C' },
-    'very poor': { stroke: '#B91C1C', bg: '#FEE2E2', text: '#B91C1C' },
-    severe: { stroke: '#831843', bg: '#FCE7F3', text: '#831843' }
-  };
-
-  const key = category.toLowerCase().trim();
-  const theme = severityColors[key] || severityColors['very poor'];
-
-  catEl.style.backgroundColor = theme.bg;
-  catEl.style.color = theme.text;
-
-  // SVG Circle Stroke calculation: 2 * PI * 90 = 565.48
-  const circumference = 565.48;
-  const clampedAqi = Math.max(0, Math.min(aqi, 500));
-  const offset = circumference - (clampedAqi / 500) * circumference;
-
-  meterCircle.style.stroke = theme.stroke;
-  meterCircle.style.strokeDashoffset = offset;
-
-  // Health recommendation text
-  const adv = healthRecommendations?.generalPopulation || healthRecommendations?.elderly;
-  if (adv) {
-    healthText.textContent = adv;
-  } else if (aqi > 400) {
-    healthText.textContent = 'Severe Emergency: Air is toxic for all age groups. Keep windows sealed, run purifiers continuously, and avoid stepping out.';
-  } else if (aqi > 300) {
-    healthText.textContent = 'Respiratory Hazard: Healthy adults will experience throat irritation; vulnerable members must wear certified N95 masks.';
-  } else {
-    healthText.textContent = 'Moderate to poor air quality. Sensitive individuals should reduce prolonged outdoor exertion during morning fog.';
-  }
-}
-
-/* ==========================================================================
-   24-Hour Forecast & Best Window Algorithm
-   ========================================================================== */
-function renderForecast(forecastItems = []) {
-  const container = document.getElementById('forecast-strip');
-  const windowPill = document.getElementById('best-window-pill');
-  const windowDesc = document.getElementById('best-window-desc');
-
-  if (!forecastItems || forecastItems.length === 0) {
-    container.innerHTML = '<div class="forecast-skeleton">Hourly forecast unavailable.</div>';
-    return;
-  }
-
-  // Find the optimal consecutive 2-3 hours with lowest AQI
-  let bestStartIndex = 0;
-  let minAvgAqi = Infinity;
-  const windowSize = Math.min(3, forecastItems.length);
-
-  for (let i = 0; i <= forecastItems.length - windowSize; i++) {
-    const sum = forecastItems.slice(i, i + windowSize).reduce((acc, curr) => acc + (curr.aqi || 0), 0);
-    const avg = sum / windowSize;
-    if (avg < minAvgAqi) {
-      minAvgAqi = avg;
-      bestStartIndex = i;
-    }
-  }
-
-  const bestEndIndex = bestStartIndex + windowSize - 1;
-
-  // Render cards
-  container.innerHTML = '';
-  forecastItems.forEach((item, index) => {
-    const isBest = index >= bestStartIndex && index <= bestEndIndex;
-    const hourLabel = formatHour(item.hour);
-    const aqi = item.aqi || 0;
-    const cat = item.category || 'Moderate';
-
-    const card = document.createElement('div');
-    card.className = `forecast-item ${isBest ? 'best-window' : ''}`;
-    card.innerHTML = `
-      ${isBest ? '<span class="best-badge">Best</span>' : ''}
-      <span class="forecast-hour">${hourLabel}</span>
-      <span class="forecast-aqi">${aqi}</span>
-      <span class="forecast-cat">${cat}</span>
-    `;
-    container.appendChild(card);
-  });
-
-  // Update Best Window Pill & Explainer Banner
-  const startHourStr = formatHour(forecastItems[bestStartIndex]?.hour);
-  const endHourStr = formatHour(forecastItems[bestEndIndex]?.hour);
-  const bestSummary = `${startHourStr} - ${endHourStr}`;
-
-  windowPill.innerHTML = `<span class="window-icon" aria-hidden="true">✨</span> Best Window: ${bestSummary}`;
-  windowDesc.innerHTML = `
-    The optimal window today is <strong>${bestSummary}</strong> (Estimated Avg NAQI ~${Math.round(minAvgAqi)}).
-    Solar heating expands the lower boundary layer, making this the safest time for outdoor errands or quick 15-minute cross-ventilation.
-  `;
-}
-
-function formatHour(isoString) {
-  if (!isoString) return '--';
-  try {
-    const d = new Date(isoString);
-    if (isNaN(d.getTime())) return isoString;
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
-  } catch (_e) {
-    return isoString;
-  }
-}
-
-function generateSyntheticForecast() {
-  const hours = [];
-  const now = new Date();
-  for (let i = 0; i < 24; i++) {
-    const d = new Date(now.getTime() + i * 3600 * 1000);
-    const h = d.getHours();
-    // Diurnal inversion curve: high at night & early morning (350-420), dips at 1:00 PM - 4:00 PM (180-240)
-    let aqi;
-    if (h >= 5 && h <= 9) aqi = 410; // Morning rush + cold inversion
-    else if (h >= 12 && h <= 16) aqi = 195; // Solar lifting
-    else if (h >= 17 && h <= 21) aqi = 380; // Evening traffic
-    else aqi = 340;
-
-    hours.push({
-      hour: d.toISOString(),
-      aqi,
-      category: aqi > 400 ? 'Severe' : aqi > 300 ? 'Very Poor' : aqi > 200 ? 'Poor' : 'Moderate'
-    });
-  }
-  return hours;
-}
-
-/* ==========================================================================
-   Household Profile Form
-   ========================================================================== */
-function initHouseholdForm() {
-  const form = document.getElementById('household-form');
-  const cityInput = document.getElementById('form-city');
-  const commuteSelect = document.getElementById('form-commute');
-  const cookingSelect = document.getElementById('form-cooking');
-  const togglePurifier = document.getElementById('toggle-purifier');
-  const togglePlants = document.getElementById('toggle-plants');
-  const togglePets = document.getElementById('toggle-pets');
-  const feedback = document.getElementById('profile-save-feedback');
-
-  // Populate form from state
-  const p = state.profile;
-  cityInput.value = p.city || state.location.name;
-  commuteSelect.value = p.commute || 'two_wheeler';
-  cookingSelect.value = p.cooking || 'lpg_png';
-  togglePurifier.checked = !!p.hasPurifier;
-  togglePlants.checked = !!p.hasPlants;
-  togglePets.checked = !!p.hasPets;
-
-  document.querySelectorAll('input[name="vulnerable"]').forEach((cb) => {
-    cb.checked = Array.isArray(p.vulnerable) && p.vulnerable.includes(cb.value);
-  });
-
-  // Handle Form Submission
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-
-    const selectedVulnerable = Array.from(document.querySelectorAll('input[name="vulnerable"]:checked')).map((c) => c.value);
-
-    const updated = {
-      city: cityInput.value.trim() || 'Delhi NCR',
-      commute: commuteSelect.value,
-      cooking: cookingSelect.value,
-      vulnerable: selectedVulnerable,
-      hasPurifier: togglePurifier.checked,
-      hasPlants: togglePlants.checked,
-      hasPets: togglePets.checked
-    };
-
-    state.profile = updated;
-    saveProfile(updated);
-
-    feedback.textContent = '✓ Profile saved! Updating your custom action plan...';
-    announceLive('Profile successfully saved to your browser.');
-
-    setTimeout(() => {
-      feedback.textContent = '';
-    }, 4000);
-
-    triggerPlanGeneration();
-  });
-}
-
-/* ==========================================================================
-   Today's Plan (Gemini Integration & Renderers)
-   ========================================================================== */
-async function triggerPlanGeneration() {
-  if (state.isGeneratingPlan) return;
-  state.isGeneratingPlan = true;
-
-  const routineContainer = document.getElementById('routine-list');
-  const refreshBtn = document.getElementById('btn-regenerate-plan');
-  if (refreshBtn) refreshBtn.disabled = true;
-
-  routineContainer.innerHTML = `
-    <div class="loading-state">
-      <div class="spinner" aria-hidden="true"></div>
-      <p>Gemini is tailoring practical smog routines for your household...</p>
-    </div>
-  `;
-
-  try {
-    const aqiPayload = state.aqiData ? state.aqiData.aqi : 340;
-    const plan = await fetchPlan(state.profile, aqiPayload);
-    state.planData = plan;
-    renderPlan(plan);
-    announceLive("Today's smog action plan has been refreshed.");
-  } catch (err) {
-    console.warn('[Saans] Live plan generation failed, rendering grounded fallback plan:', err);
-    state.planData = FALLBACK_PLAN;
-    renderPlan(FALLBACK_PLAN);
-  } finally {
-    state.isGeneratingPlan = false;
-    if (refreshBtn) refreshBtn.disabled = false;
-  }
-}
-
-// Bind plan refresh button
-document.getElementById('btn-regenerate-plan')?.addEventListener('click', () => {
-  triggerPlanGeneration();
-});
-
-function renderPlan(plan) {
-  const routineList = document.getElementById('routine-list');
-  const altList = document.getElementById('alternatives-list');
-  const doctorWarning = document.getElementById('doctor-warning-text');
-  const contextLabel = document.getElementById('plan-context-label');
-
-  if (contextLabel) {
-    const city = state.profile.city || state.location.name;
-    const aqi = state.aqiData ? state.aqiData.aqi : 340;
-    contextLabel.textContent = `Tailored for ${city} (AQI ${aqi}) with ${state.profile.vulnerable?.length || 0} vulnerable sensitivities.`;
-  }
-
-  // Doctor warning
-  if (doctorWarning && plan.doctorWarning) {
-    doctorWarning.textContent = plan.doctorWarning;
-  }
-
-  // Render Routine Cards
-  routineList.innerHTML = '';
-  const routines = Array.isArray(plan.routine) ? plan.routine : FALLBACK_PLAN.routine;
-
-  routines.forEach((item) => {
-    const card = document.createElement('article');
-    card.className = 'routine-card';
-
-    const impact = item.impact || {};
-    const impactType = (impact.type || 'exposure').toLowerCase();
-    const impactVal = impact.value ? `${impact.value}${impact.unit ? ' ' + impact.unit : ''}` : 'High Impact';
-
-    card.innerHTML = `
-      <div class="routine-card-header">
-        <span class="routine-time-badge">🕒 ${escapeHTML(item.time || 'Schedule')}</span>
-        <span class="impact-chip ${impactType}">🛡️ ${escapeHTML(impactVal)}</span>
-      </div>
-      <h4 class="routine-action">${escapeHTML(item.action || '')}</h4>
-      <p class="routine-why">${escapeHTML(item.why || '')}</p>
-      ${impact.explanation ? `<p class="routine-impact-expl" style="font-size:0.78125rem;color:var(--color-text-light);margin-top:6px;"><em>Model factor: ${escapeHTML(impact.explanation)}</em></p>` : ''}
-    `;
-    routineList.appendChild(card);
-  });
-
-  // Render Alternatives Cards
-  altList.innerHTML = '';
-  const alts = Array.isArray(plan.alternatives) ? plan.alternatives : FALLBACK_PLAN.alternatives;
-
-  alts.forEach((alt) => {
-    const card = document.createElement('div');
-    card.className = 'alt-card';
-    card.innerHTML = `
-      <div class="alt-instead">❌ Instead of: ${escapeHTML(alt.instead || '')}</div>
-      <div class="alt-try">✅ Try: ${escapeHTML(alt.try || '')}</div>
-      <div class="alt-impact">💡 Impact: ${escapeHTML(alt.impact || '')}</div>
-    `;
-    altList.appendChild(card);
-  });
-}
-
-/* ==========================================================================
-   Indoor Hacks (Room by Room)
-   ========================================================================== */
-function initHacksFilter() {
-  const chips = document.querySelectorAll('.hacks-filter-bar .filter-chip');
-  chips.forEach((chip) => {
-    chip.addEventListener('click', () => {
-      chips.forEach((c) => {
-        c.classList.remove('active');
-        c.setAttribute('aria-selected', 'false');
-      });
-      chip.classList.add('active');
-      chip.setAttribute('aria-selected', 'true');
-      renderHacks(chip.dataset.room);
-    });
-  });
-
-  // Initial render
-  renderHacks('all');
-}
-
-function renderHacks(filterRoom = 'all') {
-  const container = document.getElementById('hacks-grid');
-  container.innerHTML = '';
-
-  const filtered = filterRoom === 'all' ? CURATED_HACKS : CURATED_HACKS.filter((h) => h.room === filterRoom);
-
-  filtered.forEach((hack) => {
-    const card = document.createElement('div');
-    card.className = 'hack-card';
-    card.innerHTML = `
-      <div>
-        <div class="hack-header">
-          <span class="hack-room-tag">${escapeHTML(hack.roomName)}</span>
-          <span class="cost-tag ${hack.cost}">${escapeHTML(hack.costLabel)}</span>
-        </div>
-        <h4 class="hack-title">${escapeHTML(hack.title)}</h4>
-        <p class="hack-tip">${escapeHTML(hack.tip)}</p>
-      </div>
-      <div>
-        <span class="hack-impact">Impact: ${escapeHTML(hack.impact)}</span>
-        ${hack.explanation ? `<p class="hack-model-expl" style="font-size:0.75rem;color:var(--color-text-light);margin-top:6px;line-height:1.35;"><em>Model factor: ${escapeHTML(hack.explanation)}</em></p>` : ''}
-      </div>
-    `;
-    container.appendChild(card);
-  });
-}
-
-/* ==========================================================================
-   Ask Saans (Multilingual AI Chat)
-   ========================================================================== */
-function initChat() {
-  const form = document.getElementById('chat-form');
-  const input = document.getElementById('chat-input-text');
-  const messages = document.getElementById('chat-messages');
-
-  // Language Radios
-  document.querySelectorAll('input[name="chat-lang"]').forEach((radio) => {
-    radio.addEventListener('change', (e) => {
-      state.chatLang = e.target.value;
-      announceLive(`Switched response language to ${e.target.value}`);
-    });
-  });
-
-  // Suggested Prompts
-  document.querySelectorAll('.suggest-chip').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      input.value = btn.dataset.prompt;
-      input.focus();
-    });
-  });
-
-  // Submit Handler
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const query = input.value.trim();
-    if (!query || state.isSendingChat) return;
-
-    state.isSendingChat = true;
-    input.value = '';
-
-    // Render User Message
-    appendChatBubble('user', query);
-
-    // Render Temporary Loading Bubble
-    const loadingId = 'loading-' + Date.now();
-    const loadingBubble = document.createElement('div');
-    loadingBubble.id = loadingId;
-    loadingBubble.className = 'chat-bubble saans-bubble';
-    loadingBubble.innerHTML = `
-      <div class="bubble-avatar" aria-hidden="true">🌱</div>
-      <div class="bubble-content"><div class="spinner" style="width:16px;height:16px;margin:0 0 0 4px;border-width:2px;"></div></div>
-    `;
-    messages.appendChild(loadingBubble);
-    messages.scrollTop = messages.scrollHeight;
-
-    try {
-      const aqiVal = state.aqiData ? state.aqiData.aqi : 340;
-      const response = await sendChatMessage(query, state.profile, aqiVal, state.chatLang);
-      document.getElementById(loadingId)?.remove();
-      appendChatBubble('saans', response.reply);
-      announceLive('Saans responded to your query.');
-    } catch (_err) {
-      document.getElementById(loadingId)?.remove();
-      const fallbackReplies = {
-        en: "During severe smog, avoid outdoor exertion between 5 AM and 10 AM. Ensure N95 masks fit snugly with no nose bridge leaks, and seal window gaps with damp cloths. See a doctor if you experience wheezing or chest tightness.",
-        hi: "गंभीर स्मॉग के दौरान सुबह 5 से 10 बजे के बीच बाहर निकलने से बचें। बाहर जाते समय N95 मास्क अवश्य पहनें और खिड़कियों की दरारों को गीले तौलिये से सील करें। सांस फूलने या सीने में जकड़न पर तुरंत डॉक्टर से मिलें।",
-        mr: "तीव्र धुक्यादरम्यान सकाळी ५ ते १० या वेळेत घराबाहेर पडणे टाळा. बाहेर जाताना N95 मास्क व्यवस्थित वापरा आणि खिडक्यांच्या फटी ओल्या कपड्याने बंद करा. धाप लागल्यास तातडीने डॉक्टरांचा सल्ला घ्या."
-      };
-      const text = fallbackReplies[state.chatLang] || fallbackReplies.en;
-      appendChatBubble('saans', text);
-    } finally {
-      state.isSendingChat = false;
-    }
-  });
-}
-
-function appendChatBubble(sender, text) {
-  const messages = document.getElementById('chat-messages');
-  const bubble = document.createElement('div');
-  bubble.className = `chat-bubble ${sender === 'user' ? 'user-bubble' : 'saans-bubble'}`;
-
-  const avatar = sender === 'user' ? '👤' : '🌱';
-  bubble.innerHTML = `
-    <div class="bubble-avatar" aria-hidden="true">${avatar}</div>
-    <div class="bubble-content"><p>${escapeHTML(text)}</p></div>
-  `;
-  messages.appendChild(bubble);
-  messages.scrollTop = messages.scrollHeight;
-}
-
-/* ==========================================================================
-   Impact Tracker (Powered by Transparent Model)
-   ========================================================================== */
-function initImpactTracker() {
-  renderImpact();
-
-  // Quick Action Log Buttons
-  document.querySelectorAll('.btn-log').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const type = btn.dataset.type;
-      let expAdd = 0;
-      let co2Add = 0;
-      let moneyAdd = 0;
-      let actionExplanation = '';
-
-      const ambientAqi = state.aqiData ? state.aqiData.aqi : 340;
-
-      if (type === 'walk_shift') {
-        const est = estimateWalkShiftExposure(ambientAqi, 190, 2.5);
-        expAdd = 2.5;
-        actionExplanation = est.explanation;
-      } else if (type === 'metro_commute') {
-        const fromMode = state.profile.commute || 'two_wheeler';
-        const est = estimateCommuteShift(fromMode, 'metro', 15);
-        co2Add = est.savedCo2Kg;
-        moneyAdd = est.savedInr;
-        expAdd = 1.0;
-        actionExplanation = est.explanation;
-      } else if (type === 'door_seal') {
-        const est = estimateIndoorProtection(ambientAqi, false, true);
-        expAdd = 4.0;
-        actionExplanation = est.explanation;
-      } else if (type === 'no_smoke') {
-        expAdd = 3.0;
-        actionExplanation = 'Eliminating indoor agarbatti/dhoop smoke stops direct combustion generation of indoor acrolein and formaldehyde.';
+  // Use my location button
+  const geoBtn = document.getElementById('btn-use-geolocation');
+  if (geoBtn) {
+    geoBtn.addEventListener('click', async () => {
+      geoBtn.disabled = true;
+      geoBtn.textContent = 'Locating...';
+      try {
+        const coords = await getCurrentCoordinates();
+        state.profile.lat = coords.lat;
+        state.profile.lng = coords.lng;
+        state.profile.city = 'My Location';
+        state.lat = coords.lat;
+        state.lng = coords.lng;
+        state.currentCity = 'My Location';
+        if (cityInput) cityInput.value = 'My Location';
+        showToast('Location updated successfully!', 'success');
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        geoBtn.disabled = false;
+        geoBtn.innerHTML = `${icon('locate-fixed', 18)} Use my current location`;
       }
+    });
+  }
 
-      state.impact.exposureHours = +(state.impact.exposureHours + expAdd).toFixed(1);
-      state.impact.co2Saved = +(state.impact.co2Saved + co2Add).toFixed(1);
-      state.impact.moneySaved = +(state.impact.moneySaved + moneyAdd);
-      state.impact.lastUpdated = new Date().toISOString();
-
-      saveImpact(state.impact);
-      renderImpact(actionExplanation);
-
-      // Visual feedback
-      btn.style.transform = 'scale(0.97)';
-      setTimeout(() => {
-        btn.style.transform = '';
-      }, 150);
-      announceLive(`Logged action! Added to your weekly impact tally. ${actionExplanation}`);
+  // Popular city pills
+  overlay.querySelectorAll('.city-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      const name = pill.getAttribute('data-city');
+      const lat = Number(pill.getAttribute('data-lat'));
+      const lng = Number(pill.getAttribute('data-lng'));
+      state.profile.city = name;
+      state.profile.lat = lat;
+      state.profile.lng = lng;
+      state.lat = lat;
+      state.lng = lng;
+      state.currentCity = name;
+      if (cityInput) cityInput.value = name;
+      if (searchError) searchError.style.display = 'none';
+      overlay.querySelectorAll('.city-pill').forEach(p => p.classList.remove('city-pill-active'));
+      pill.classList.add('city-pill-active');
     });
   });
 
-  // Reset Week
-  document.getElementById('btn-reset-impact')?.addEventListener('click', () => {
-    if (confirm('Reset your weekly protection and emission savings tally?')) {
-      state.impact = resetImpact();
-      renderImpact();
-      announceLive('Weekly impact tally has been reset.');
-    }
+  // Step 2: Member card selections
+  overlay.querySelectorAll('.member-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const id = card.getAttribute('data-member-id');
+      const list = state.profile.household || [];
+      const idx = list.indexOf(id);
+      if (idx > -1) list.splice(idx, 1);
+      else list.push(id);
+      state.profile.household = [...list];
+      card.classList.toggle('card-selected', list.includes(id));
+      card.setAttribute('aria-pressed', list.includes(id) ? 'true' : 'false');
+      const checkWrap = card.querySelector('.card-checkbox-indicator');
+      if (checkWrap) checkWrap.innerHTML = list.includes(id) ? icon('check', 16) : '';
+    });
   });
+
+  // Step 3: Commute Mode
+  overlay.querySelectorAll('.commute-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = btn.getAttribute('data-commute-mode');
+      state.profile.commute = mode;
+      overlay.querySelectorAll('.commute-btn').forEach(b => b.classList.remove('commute-btn-active'));
+      btn.classList.add('commute-btn-active');
+    });
+  });
+
+  // Step 3: Commute Distance Slider
+  const slider = document.getElementById('commute-distance-range');
+  const kmValDisplay = document.getElementById('km-display-val');
+  if (slider && kmValDisplay) {
+    slider.addEventListener('input', () => {
+      kmValDisplay.textContent = slider.value;
+      state.profile.commuteDistanceKm = Number(slider.value);
+    });
+  }
+
+  // Step 3: Cooking Fuel
+  overlay.querySelectorAll('.fuel-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const fuel = btn.getAttribute('data-fuel');
+      state.profile.cooking = fuel;
+      overlay.querySelectorAll('.fuel-btn').forEach(b => b.classList.remove('fuel-btn-active'));
+      btn.classList.add('fuel-btn-active');
+    });
+  });
+
+  // Step 3: Equipment checkboxes
+  const purifierBox = document.getElementById('toggle-purifier');
+  if (purifierBox) {
+    purifierBox.addEventListener('change', () => {
+      state.profile.hasPurifier = purifierBox.checked;
+    });
+  }
+  const plantsBox = document.getElementById('toggle-plants');
+  if (plantsBox) {
+    plantsBox.addEventListener('change', () => {
+      state.profile.hasPlants = plantsBox.checked;
+    });
+  }
+  const petsBox = document.getElementById('toggle-pets');
+  if (petsBox) {
+    petsBox.addEventListener('change', () => {
+      state.profile.hasPets = petsBox.checked;
+    });
+  }
+
+  // Stepper Back & Next buttons
+  const backBtn = document.getElementById('btn-household-back');
+  if (backBtn) {
+    backBtn.addEventListener('click', () => {
+      setHouseholdStep(householdStep - 1);
+      overlay.innerHTML = renderHouseholdSheet(state.profile);
+      bindHouseholdSheetEvents();
+    });
+  }
+
+  const nextBtn = document.getElementById('btn-household-next');
+  if (nextBtn) {
+    nextBtn.addEventListener('click', () => {
+      setHouseholdStep(householdStep + 1);
+      overlay.innerHTML = renderHouseholdSheet(state.profile);
+      bindHouseholdSheetEvents();
+    });
+  }
+
+  const saveBtn = document.getElementById('btn-household-save');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      saveProfile(state.profile);
+      closeHouseholdSheet();
+      showToast('Household settings saved!', 'success');
+      // Refresh views with updated profile
+      loadAqiData();
+      if (state.activeTab === 'plan') loadPlan();
+    });
+  }
 }
 
-function renderImpact(latestExplanation = '') {
-  const expEl = document.getElementById('impact-exposure-hours');
-  const co2El = document.getElementById('impact-co2-saved');
-  const moneyEl = document.getElementById('impact-money-saved');
+/**
+ * Bootstrap on DOM ready
+ */
+export function initApp() {
+  initIconSprite();
+  initTheme();
+  bindTabs();
+  bindHouseholdModal();
 
-  if (expEl) expEl.textContent = state.impact.exposureHours;
-  if (co2El) co2El.textContent = state.impact.co2Saved;
-  if (moneyEl) moneyEl.textContent = `₹${state.impact.moneySaved}`;
+  const themeToggle = document.getElementById('btn-theme-toggle');
+  if (themeToggle) {
+    themeToggle.addEventListener('click', toggleTheme);
+  }
 
-  // Update dynamic methodology / explanation text if an action was just logged
-  const methodDesc = document.querySelector('.methodology-card');
-  if (methodDesc && latestExplanation) {
-    let recentBanner = document.getElementById('recent-action-expl');
-    if (!recentBanner) {
-      recentBanner = document.createElement('div');
-      recentBanner.id = 'recent-action-expl';
-      recentBanner.style.cssText = 'padding:10px 14px;background-color:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;margin-bottom:12px;font-size:0.8125rem;color:#166534;';
-      methodDesc.prepend(recentBanner);
+  // Refresh relative time label every 60 seconds
+  setInterval(() => {
+    const updatedEl = document.getElementById('hero-updated-time');
+    if (updatedEl && state.aqiUpdatedAt) {
+      const rel = getRelativeTime(state.aqiUpdatedAt);
+      const full = new Date(state.aqiUpdatedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      updatedEl.textContent = `Updated ${rel} · Source: Google Air Quality API`;
+      updatedEl.setAttribute('title', full);
     }
-    recentBanner.innerHTML = `<strong>Latest Logged Impact:</strong> ${escapeHTML(latestExplanation)} <br><small style="color:#15803D;"><em>${DISCLAIMER}</em></small>`;
-  }
+  }, 60000);
+
+  loadAqiData();
 }
 
-/* ==========================================================================
-   Helpers & A11y Announcements
-   ========================================================================== */
-function announceLive(message) {
-  const announcer = document.getElementById('live-announcer');
-  if (announcer) {
-    announcer.textContent = message;
-  }
-}
-
-function showStatusBanner(msg, type = 'info') {
-  const banner = document.getElementById('status-banner');
-  if (banner) {
-    banner.textContent = msg;
-    banner.classList.remove('hidden');
-    if (type === 'warning') {
-      banner.style.backgroundColor = '#FEF2F2';
-      banner.style.borderColor = '#FCA5A5';
-      banner.style.color = '#991B1B';
-    } else {
-      banner.style.backgroundColor = '#FEF3C7';
-      banner.style.borderColor = '#FCD34D';
-      banner.style.color = '#92400E';
-    }
-  }
-}
-
-function hideStatusBanner() {
-  const banner = document.getElementById('status-banner');
-  if (banner) {
-    banner.classList.add('hidden');
-  }
-}
-
-function escapeHTML(str) {
-  if (typeof str !== 'string') return str;
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', initApp);
 }

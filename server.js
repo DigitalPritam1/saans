@@ -10,6 +10,8 @@ import aqiRouter from './src/routes/aqi.routes.js';
 import planRouter from './src/routes/plan.routes.js';
 import chatRouter from './src/routes/chat.routes.js';
 import configRouter from './src/routes/config.routes.js';
+import weatherRouter from './src/routes/weather.routes.js';
+import citiesRouter from './src/routes/cities.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +28,7 @@ app.use(
         scriptSrc: [
           "'self'",
           'https://maps.googleapis.com',
+          'https://maps.gstatic.com',
           'https://*.googleapis.com'
         ],
         connectSrc: [
@@ -79,6 +82,8 @@ app.use('/api/config', configRouter);
 app.use('/api/aqi', aqiRouter);
 app.use('/api/plan', planRouter);
 app.use('/api/chat', chatRouter);
+app.use('/api/weather', weatherRouter);
+app.use('/api/cities', citiesRouter);
 
 // Serve static frontend from /public
 app.use(express.static(path.join(__dirname, 'public')));

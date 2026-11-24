@@ -27,11 +27,15 @@ export async function fetchAqi(lat, lng) {
   return await res.json();
 }
 
-export async function fetchPlan(profile, aqi) {
+export async function fetchPlan(profile, aqi, windows = null) {
+  const body = { profile, aqi };
+  if (windows) {
+    body.windows = windows;
+  }
   const res = await fetch('/api/plan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ profile, aqi })
+    body: JSON.stringify(body)
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
@@ -55,4 +59,28 @@ export async function sendChatMessage(message, profile, aqi, lang = 'en') {
     throw error;
   }
   return await res.json();
+}
+
+export async function fetchWeather(lat, lng) {
+  const url = `/api/weather?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    const error = new Error(errData.error || `Failed to fetch weather data (${res.status})`);
+    error.status = res.status;
+    throw error;
+  }
+  return await res.json();
+}
+
+export async function fetchCities() {
+  const res = await fetch('/api/cities');
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    const error = new Error(errData.error || `Failed to fetch cities (${res.status})`);
+    error.status = res.status;
+    throw error;
+  }
+  const data = await res.json();
+  return data.cities || [];
 }

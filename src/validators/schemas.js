@@ -19,7 +19,8 @@ export const planBodySchema = z.object({
       category: z.string().optional(),
       dominantPollutant: z.string().optional(),
       pm25: z.number().optional(),
-      pm10: z.number().optional()
+      pm10: z.number().optional(),
+      scale: z.string().optional()
     })
   ]),
   profile: z.object({
@@ -27,10 +28,19 @@ export const planBodySchema = z.object({
     household: z.array(z.string().max(50)).optional(),
     residenceType: z.string().max(50).optional(),
     hasPurifier: z.boolean().optional(),
+    hasPlants: z.boolean().optional(),
+    hasPets: z.boolean().optional(),
     commute: z.string().max(100).optional(),
+    commuteDistanceKm: z.coerce.number().min(1).max(150).optional().default(15),
+    cooking: z.string().max(50).optional(),
+    vulnerable: z.array(z.string().max(50)).optional(),
     vulnerableMembers: z.array(z.string().max(50)).optional(),
     notes: z.string().max(200).optional()
-  }).passthrough().optional().default({})
+  }).passthrough().optional().default({}),
+  windows: z.object({
+    bestWindow: z.any().optional(),
+    worstWindow: z.any().optional()
+  }).optional()
 });
 
 export const chatBodySchema = z.object({

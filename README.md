@@ -49,7 +49,7 @@ Every winter, millions of households across northern and central India (Delhi NC
 |        |     Very Poor     |                                            |
 |        +-------------------+    [ Generate Action Plan -> ]             |
 |                                                                         |
-|  24-Hour Smog & Ventilation Forecast   [✨ Best Window: 1:30 PM - 4:00 PM]|
+|  24-Hour Smog & Ventilation Forecast   [Best Window: 1:30 PM - 4:00 PM]   |
 |  +-------+ +-------+ +-------+ +-------------+ +-------+ +-------+      |
 |  | 07:00 | | 09:00 | | 11:00 | | 13:00 (BEST)| | 17:00 | | 21:00 |      |
 |  |  410  | |  380  | |  280  | |     185     | |  360  | |  390  |      |
@@ -115,6 +115,7 @@ flowchart TD
 | Service | Component | Why It Was Chosen |
 | :--- | :--- | :--- |
 | **Google Air Quality API** | `currentConditions:lookup` & `forecast:lookup` | Provides verified real-time local Indian National Air Quality Index (`aqi_in`), dominant pollutant concentrations ($\text{PM}_{2.5}$, $\text{PM}_{10}$), and 24-hour hourly diurnal forecasts. |
+| **Google Maps Platform Weather API** | `currentConditions:lookup` | Retrieves temperature, feels-like temperature, humidity, wind velocity, and UV index to evaluate cold-air inversion risks and ground smog trapping. Requires enabling the Google Maps Platform Weather API in your Google Cloud Console. |
 | **Google Gemini API** | `@google/genai` (`gemini-3.8-flash`) | Fast, cost-efficient generative reasoning. Uses structured JSON output (`responseMimeType: "application/json"`) to tailor practical daily routines, indoor hacks, and multilingual answers (English, Hindi, Marathi). |
 | **Google Maps Platform** | Places Autocomplete & Geocoding | Allows users to search any Indian city, sector, or colony with autocomplete while keeping server keys safe behind the backend proxy. |
 | **Google Cloud Run** | Containerized Serverless | Auto-scales to zero, fast cold starts on `node:20-slim`, zero server maintenance, and native binding to Cloud Run's `$PORT`. |
