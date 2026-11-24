@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Saans (साँस) - GenAI Urban Air Quality Assistant for Indian families dealing with winter smog. Actionable low-emission routines and indoor hacks.">
+  <meta name="theme-color" content="#0F766E">
+  <title>Saans (साँस) | Urban Air Quality Assistant</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Skip Navigation for Accessibility -->
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
+  <!-- Top Navigation Header -->
+  <header class="app-header" role="banner">
+    <div class="header-inner container">
+      <div class="brand">
+        <div class="brand-logo" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1 class="brand-title">Saans <span class="hindi-text">साँस</span></h1>
+          <p class="brand-subtitle">Urban Winter Smog Assistant</p>
+        </div>
+      </div>
+
+      <!-- Quick Location & Live Badge -->
+      <div class="location-badge" id="current-location-pill" title="Active monitoring location">
+        <span class="live-dot" aria-hidden="true"></span>
+        <span id="active-location-name">Delhi NCR</span>
+      </div>
+    </div>
+
+    <!-- Navigation Bar -->
+    <nav class="nav-bar container" aria-label="Main Navigation">
+      <ul class="nav-tabs" role="tablist">
+        <li role="presentation">
+          <button class="nav-tab active" role="tab" id="tab-home" aria-selected="true" aria-controls="section-home" data-target="home">
+            <span class="tab-icon" aria-hidden="true">🏠</span>
+            <span class="tab-label">Home</span>
+          </button>
+        </li>
+        <li role="presentation">
+          <button class="nav-tab" role="tab" id="tab-plan" aria-selected="false" aria-controls="section-plan" data-target="plan">
+            <span class="tab-icon" aria-hidden="true">📋</span>
+            <span class="tab-label">Today's Plan</span>
+          </button>
+        </li>
+        <li role="presentation">
+          <button class="nav-tab" role="tab" id="tab-hacks" aria-selected="false" aria-controls="section-hacks" data-target="hacks">
+            <span class="tab-icon" aria-hidden="true">💡</span>
+            <span class="tab-label">Indoor Hacks</span>
+          </button>
+        </li>
+        <li role="presentation">
+          <button class="nav-tab" role="tab" id="tab-household" aria-selected="false" aria-controls="section-household" data-target="household">
+            <span class="tab-icon" aria-hidden="true">👨‍👩‍👧‍👦</span>
+            <span class="tab-label">My Household</span>
+          </button>
+        </li>
+        <li role="presentation">
+          <button class="nav-tab" role="tab" id="tab-chat" aria-selected="false" aria-controls="section-chat" data-target="chat">
+            <span class="tab-icon" aria-hidden="true">💬</span>
+            <span class="tab-label">Ask Saans</span>
+          </button>
+        </li>
+        <li role="presentation">
+          <button class="nav-tab" role="tab" id="tab-impact" aria-selected="false" aria-controls="section-impact" data-target="impact">
+            <span class="tab-icon" aria-hidden="true">📊</span>
+            <span class="tab-label">Impact</span>
+          </button>
+        </li>
+      </ul>
+    </nav>
+  </header>
+
+  <!-- Live Status Banner (Announcements for Screen Readers) -->
+  <div id="live-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Global Alert / Offline / API key notification bar -->
+  <div id="status-banner" class="status-banner container hidden" role="alert"></div>
+
+  <!-- Main App Content -->
+  <main id="main-content" class="container main-container" tabindex="-1">
+
+    <!-- ============================================== -->
+    <!-- SECTION 1: HOME (AQI Ring, Forecast, Best Window) -->
+    <!-- ============================================== -->
+    <section id="section-home" class="app-section active" role="tabpanel" aria-labelledby="tab-home">
+      <!-- Location Picker Bar -->
+      <div class="card location-card">
+        <div class="location-search-row">
+          <div class="search-input-wrapper">
+            <label for="places-input" class="sr-only">Search Indian city or neighborhood</label>
+            <input type="text" id="places-input" class="search-input" placeholder="Search city or locality (e.g. Noida, Bandra, Rohini)" autocomplete="off">
+            <span class="search-icon" aria-hidden="true">🔍</span>
+          </div>
+          <button id="btn-use-location" class="btn btn-secondary btn-icon" title="Use current GPS location" aria-label="Use current GPS location">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="3 11 22 2 13 21 11 13 3 11"/>
+            </svg>
+            <span class="btn-text">Near Me</span>
+          </button>
+        </div>
+
+        <!-- Quick City Presets -->
+        <div class="city-chips" aria-label="Popular cities">
+          <span class="chips-label">Quick select:</span>
+          <button type="button" class="chip-btn active" data-lat="28.6139" data-lng="77.2090" data-name="New Delhi">Delhi NCR</button>
+          <button type="button" class="chip-btn" data-lat="28.5355" data-lng="77.3910" data-name="Noida">Noida</button>
+          <button type="button" class="chip-btn" data-lat="28.4595" data-lng="77.0266" data-name="Gurugram">Gurugram</button>
+          <button type="button" class="chip-btn" data-lat="19.0760" data-lng="72.8777" data-name="Mumbai">Mumbai</button>
+          <button type="button" class="chip-btn" data-lat="22.5726" data-lng="88.3639" data-name="Kolkata">Kolkata</button>
+          <button type="button" class="chip-btn" data-lat="26.8467" data-lng="80.9462" data-name="Lucknow">Lucknow</button>
+          <button type="button" class="chip-btn" data-lat="25.6127" data-lng="85.1589" data-name="Patna">Patna</button>
+        </div>
+      </div>
+
+      <!-- Hero AQI Display Card -->
+      <div class="card aqi-hero-card" id="aqi-hero-card">
+        <div class="aqi-hero-grid">
+          <!-- Circular SVG AQI Ring -->
+          <div class="aqi-ring-container">
+            <div class="aqi-ring-wrapper">
+              <svg class="aqi-ring-svg" viewBox="0 0 220 220" role="img" aria-labelledby="aqi-svg-title">
+                <title id="aqi-svg-title">Air Quality Index Meter</title>
+                <!-- Background track -->
+                <circle class="ring-bg" cx="110" cy="110" r="90" stroke-width="16" fill="transparent"/>
+                <!-- Dynamic Progress meter -->
+                <circle class="ring-progress" id="aqi-meter-circle" cx="110" cy="110" r="90" stroke-width="16" fill="transparent"
+                        stroke-dasharray="565.48" stroke-dashoffset="180" stroke-linecap="round"/>
+              </svg>
+              <div class="aqi-ring-center">
+                <span class="aqi-val-label">NAQI</span>
+                <span class="aqi-val" id="aqi-hero-value">--</span>
+                <span class="aqi-category-badge" id="aqi-hero-category">Loading...</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- AQI Metrics Details -->
+          <div class="aqi-details-col">
+            <div class="pollutant-highlight">
+              <span class="detail-label">Dominant Pollutant</span>
+              <span class="pollutant-val" id="aqi-hero-dominant">PM2.5 (Fine particulate matter)</span>
+            </div>
+
+            <div class="advisory-box" id="aqi-health-advice">
+              <p class="advisory-title">Health Warning</p>
+              <p class="advisory-text" id="aqi-health-text">Air quality data is loading for your area...</p>
+            </div>
+
+            <div class="action-prompt-row">
+              <button class="btn btn-primary" id="btn-hero-view-plan">
+                Generate Today's Action Plan ➔
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 24-Hour Forecast & Golden Ventilation Window -->
+      <div class="card forecast-card">
+        <div class="section-card-header">
+          <div>
+            <h2 class="section-title">24-Hour Smog & Ventilation Forecast</h2>
+            <p class="section-desc">Hourly predicted NAQI with optimal outdoor and ventilation windows highlighted.</p>
+          </div>
+          <div class="window-pill" id="best-window-pill">
+            <span class="window-icon" aria-hidden="true">✨</span>
+            <span id="best-window-text">Calculating best window...</span>
+          </div>
+        </div>
+
+        <!-- Best Window Explainer Banner -->
+        <div class="best-window-banner" id="best-window-banner">
+          <div class="banner-icon" aria-hidden="true">☀️</div>
+          <div class="banner-content">
+            <p class="banner-heading" id="best-window-title">Optimal Vent Window</p>
+            <p class="banner-sub" id="best-window-desc">
+              Ground-level temperature inversion traps heavy pollutants overnight and during early mornings. The best time to run errands or briefly cross-ventilate is early afternoon.
+            </p>
+          </div>
+        </div>
+
+        <!-- Horizontal Scrollable Hourly Strip -->
+        <div class="forecast-strip" id="forecast-strip" role="region" aria-label="Hourly air quality forecast">
+          <!-- Populated dynamically via JS -->
+          <div class="forecast-skeleton">Loading forecast hours...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================== -->
+    <!-- SECTION 2: MY HOUSEHOLD (Stored in LocalStorage) -->
+    <!-- ============================================== -->
+    <section id="section-household" class="app-section" role="tabpanel" aria-labelledby="tab-household" hidden>
+      <div class="card form-card">
+        <div class="section-card-header">
+          <div>
+            <h2 class="section-title">Household Profile & Sensitivity</h2>
+            <p class="section-desc">Saved strictly in your browser. Used by Gemini to personalize routines and recommendations.</p>
+          </div>
+          <span class="privacy-tag">🔒 Stored in LocalStorage Only</span>
+        </div>
+
+        <form id="household-form" novalidate>
+          <!-- City / Location -->
+          <div class="form-group">
+            <label for="form-city" class="form-label">City / Locality Name</label>
+            <input type="text" id="form-city" class="form-input" placeholder="e.g. South Delhi, Ghaziabad, Thane, Navi Mumbai" value="Delhi NCR">
+          </div>
+
+          <!-- Vulnerable Family Members -->
+          <fieldset class="form-fieldset">
+            <legend class="fieldset-legend">Family Members at Home</legend>
+            <p class="fieldset-hint">Select all that apply for special vulnerability protections.</p>
+            
+            <div class="checkbox-grid">
+              <label class="checkbox-card">
+                <input type="checkbox" id="check-kids" name="vulnerable" value="kids">
+                <span class="checkbox-box"></span>
+                <span class="checkbox-label">
+                  <strong>Babies / Children (under 12)</strong>
+                  <small>Lungs still developing; breathe faster per kg body weight</small>
+                </span>
+              </label>
+
+              <label class="checkbox-card">
+                <input type="checkbox" id="check-elderly" name="vulnerable" value="elderly">
+                <span class="checkbox-box"></span>
+                <span class="checkbox-label">
+                  <strong>Elderly Members (60+)</strong>
+                  <small>Higher susceptibility to cardiovascular smog stress</small>
+                </span>
+              </label>
+
+              <label class="checkbox-card">
+                <input type="checkbox" id="check-asthma" name="vulnerable" value="asthma">
+                <span class="checkbox-box"></span>
+                <span class="checkbox-label">
+                  <strong>Asthma / Bronchitis / Heart Condition</strong>
+                  <small>Requires SOS inhaler proximity & strict N95 adherence</small>
+                </span>
+              </label>
+
+              <label class="checkbox-card">
+                <input type="checkbox" id="check-pregnant" name="vulnerable" value="pregnant">
+                <span class="checkbox-box"></span>
+                <span class="checkbox-label">
+                  <strong>Pregnant Member</strong>
+                  <small>Fine PM2.5 crosses placental barrier</small>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <!-- Commute & Lifestyle -->
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="form-commute" class="form-label">Primary Daily Commute Mode</label>
+              <select id="form-commute" class="form-select">
+                <option value="two_wheeler">Two-Wheeler (Motorcycle / Scooter) - High direct exposure</option>
+                <option value="metro_train">Metro / Local Train - Enclosed / Filtered transit</option>
+                <option value="car_ac">Car (AC on Recirculate Mode)</option>
+                <option value="public_bus">Public Bus / Auto-Rickshaw</option>
+                <option value="walk_cycle">Bicycle / Walking</option>
+                <option value="wfh">Work From Home / Minimal Travel</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="form-cooking" class="form-label">Cooking Setup</label>
+              <select id="form-cooking" class="form-select">
+                <option value="lpg_png">LPG / PNG Gas Pipeline</option>
+                <option value="induction">Induction / Electric Cooktop (Lowest particulate)</option>
+                <option value="biomass">Chulha / Biomass / Kerosene (High indoor soot)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Home Air Quality Equipment -->
+          <fieldset class="form-fieldset">
+            <legend class="fieldset-legend">Home Equipment & Surroundings</legend>
+            <div class="toggles-grid">
+              <label class="toggle-card">
+                <span class="toggle-info">
+                  <strong>HEPA Air Purifier</strong>
+                  <small>Mechanical filter in bedroom or hall</small>
+                </span>
+                <input type="checkbox" id="toggle-purifier" class="toggle-switch">
+              </label>
+
+              <label class="toggle-card">
+                <span class="toggle-info">
+                  <strong>Indoor Air Plants</strong>
+                  <small>Snake plant, Areca Palm, Money plant</small>
+                </span>
+                <input type="checkbox" id="toggle-plants" class="toggle-switch">
+              </label>
+
+              <label class="toggle-card">
+                <span class="toggle-info">
+                  <strong>Household Pets</strong>
+                  <small>Dogs, cats, or birds susceptible to smog</small>
+                </span>
+                <input type="checkbox" id="toggle-pets" class="toggle-switch">
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary" id="btn-save-profile">
+              Save Profile & Update Today's Plan
+            </button>
+            <span id="profile-save-feedback" class="save-feedback" aria-live="polite"></span>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- ============================================== -->
+    <!-- SECTION 3: TODAY'S PLAN (Personalized Routines) -->
+    <!-- ============================================== -->
+    <section id="section-plan" class="app-section" role="tabpanel" aria-labelledby="tab-plan" hidden>
+      <div class="plan-header-card card">
+        <div class="plan-header-flex">
+          <div>
+            <h2 class="section-title">Today's Smog Survival Action Plan</h2>
+            <p class="section-desc" id="plan-context-label">Tailored for your current AQI and household sensitivities.</p>
+          </div>
+          <button class="btn btn-secondary btn-icon" id="btn-regenerate-plan">
+            <span class="btn-icon" aria-hidden="true">🔄</span>
+            <span>Refresh Plan</span>
+          </button>
+        </div>
+
+        <!-- Vulnerability Warning Box -->
+        <div class="doctor-warning-box" id="plan-doctor-warning">
+          <div class="warning-icon" aria-hidden="true">🚨</div>
+          <div class="warning-content">
+            <strong>See a Doctor Immediately if:</strong>
+            <p id="doctor-warning-text">Any family member experiences persistent wheezing, breathlessness at rest, chest constriction, or blue discoloration around lips and fingertips.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actionable Routine Timeline -->
+      <div class="section-sub-block">
+        <h3 class="block-title">🕒 Timed Daily Routine Adjustments</h3>
+        <div id="routine-list" class="routine-list" aria-label="Daily routine cards">
+          <!-- Populated dynamically via JS -->
+          <div class="loading-state">
+            <div class="spinner" aria-hidden="true"></div>
+            <p>Gemini is tailoring low-exposure routine adjustments for your family...</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sustainable Alternatives -->
+      <div class="section-sub-block">
+        <h3 class="block-title">🔄 Smarter Daily Alternatives</h3>
+        <div id="alternatives-list" class="alternatives-grid" aria-label="Health and commute alternatives">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================== -->
+    <!-- SECTION 4: INDOOR HACKS (Room-by-Room & Low Cost) -->
+    <!-- ============================================== -->
+    <section id="section-hacks" class="app-section" role="tabpanel" aria-labelledby="tab-hacks" hidden>
+      <div class="card hacks-intro-card">
+        <div class="section-card-header">
+          <div>
+            <h2 class="section-title">Room-by-Room Indoor Hacks</h2>
+            <p class="section-desc">Practical, low-cost modifications to keep indoor PM2.5 significantly lower than the street.</p>
+          </div>
+        </div>
+
+        <!-- Room Filter Tabs -->
+        <div class="hacks-filter-bar" role="tablist" aria-label="Filter hacks by room">
+          <button type="button" class="filter-chip active" data-room="all" role="tab" aria-selected="true">All Rooms</button>
+          <button type="button" class="filter-chip" data-room="bedroom" role="tab" aria-selected="false">🛏️ Bedroom</button>
+          <button type="button" class="filter-chip" data-room="living" role="tab" aria-selected="false">🛋️ Living Room & Balcony</button>
+          <button type="button" class="filter-chip" data-room="kitchen" role="tab" aria-selected="false">🍳 Kitchen</button>
+          <button type="button" class="filter-chip" data-room="general" role="tab" aria-selected="false">🧹 General Home Care</button>
+        </div>
+      </div>
+
+      <!-- Hacks Grid -->
+      <div id="hacks-grid" class="hacks-grid" aria-label="Indoor air hacks list">
+        <!-- Loaded via JS from Gemini or curated Indian household defaults -->
+      </div>
+    </section>
+
+    <!-- ============================================== -->
+    <!-- SECTION 5: ASK SAANS (Multilingual AI Chat) -->
+    <!-- ============================================== -->
+    <section id="section-chat" class="app-section" role="tabpanel" aria-labelledby="tab-chat" hidden>
+      <div class="card chat-card">
+        <!-- Chat Header & Language Switcher -->
+        <div class="chat-header">
+          <div class="chat-header-info">
+            <h2 class="section-title">Ask Saans (साँस)</h2>
+            <p class="section-desc">Grounded advice in your preferred language. Never medical diagnosis.</p>
+          </div>
+
+          <div class="lang-switch-group" role="radiogroup" aria-label="Response Language">
+            <label class="lang-pill">
+              <input type="radio" name="chat-lang" value="en" checked>
+              <span>English</span>
+            </label>
+            <label class="lang-pill">
+              <input type="radio" name="chat-lang" value="hi">
+              <span>हिंदी</span>
+            </label>
+            <label class="lang-pill">
+              <input type="radio" name="chat-lang" value="mr">
+              <span>मराठी</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Suggested Prompt Chips -->
+        <div class="chat-suggested-row" aria-label="Suggested questions">
+          <span class="suggest-label">Try asking:</span>
+          <button type="button" class="suggest-chip" data-prompt="Can I go for an evening walk or jog today?">Can I go for a walk today?</button>
+          <button type="button" class="suggest-chip" data-prompt="How do I seal my balcony doors without buying expensive weatherstrips?">Damp towel door hack?</button>
+          <button type="button" class="suggest-chip" data-prompt="Which mask is best for a two-wheeler ride in Delhi smog?">Best mask for bike commute?</button>
+          <button type="button" class="suggest-chip" data-prompt="Should I avoid burning incense (agarbatti) and mosquito coils during winter?">Are agarbatti and dhoop safe?</button>
+        </div>
+
+        <!-- Message Stream -->
+        <div class="chat-messages" id="chat-messages" role="log" aria-live="polite">
+          <div class="chat-bubble saans-bubble">
+            <div class="bubble-avatar" aria-hidden="true">🌱</div>
+            <div class="bubble-content">
+              <p>Namaste! I'm <strong>Saans</strong>, your family's winter air quality assistant. Ask me anything about today's smog, travel adjustments, indoor air hacks, or child and elder care.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Input Form -->
+        <form id="chat-form" class="chat-input-bar">
+          <label for="chat-input-text" class="sr-only">Type your question</label>
+          <input type="text" id="chat-input-text" class="chat-input" placeholder="Ask about daily routine, masks, purifier tips... (max 500 chars)" maxlength="500" autocomplete="off" required>
+          <button type="submit" class="btn btn-primary btn-icon" id="btn-chat-send" aria-label="Send query">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+            <span class="sr-only">Send</span>
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ============================================== -->
+    <!-- SECTION 6: IMPACT TRACKER (Hours Avoided & CO2) -->
+    <!-- ============================================== -->
+    <section id="section-impact" class="app-section" role="tabpanel" aria-labelledby="tab-impact" hidden>
+      <div class="card impact-hero-card">
+        <div class="section-card-header">
+          <div>
+            <h2 class="section-title">Your Weekly Health & Emission Impact</h2>
+            <p class="section-desc">Quantified benefits of your proactive routine shifts and sustainable lifestyle choices.</p>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-reset-impact" title="Reset your weekly tally">
+            Reset Week
+          </button>
+        </div>
+
+        <!-- Large Metrics Grid -->
+        <div class="impact-metrics-grid">
+          <div class="metric-card">
+            <span class="metric-icon" aria-hidden="true">🛡️</span>
+            <div class="metric-val" id="impact-exposure-hours">16.5</div>
+            <div class="metric-unit">Hours</div>
+            <div class="metric-label">Severe Smog Exposure Avoided</div>
+            <p class="metric-sub">By shifting workouts & errands out of early morning thermal inversions.</p>
+          </div>
+
+          <div class="metric-card">
+            <span class="metric-icon" aria-hidden="true">🌱</span>
+            <div class="metric-val" id="impact-co2-saved">12.8</div>
+            <div class="metric-unit">kg CO₂</div>
+            <div class="metric-label">Emissions Prevented</div>
+            <p class="metric-sub">By substituting solo vehicular rides with Metro or batching errands.</p>
+          </div>
+
+          <div class="metric-card">
+            <span class="metric-icon" aria-hidden="true">💰</span>
+            <div class="metric-val" id="impact-money-saved">₹380</div>
+            <div class="metric-unit">INR</div>
+            <div class="metric-label">Fuel & Commute Saved</div>
+            <p class="metric-sub">Direct savings from public transport and reduced idle engine run.</p>
+          </div>
+        </div>
+
+        <!-- Action Logging Card -->
+        <div class="log-action-card">
+          <h3 class="log-title">Log Today's Protection Action</h3>
+          <p class="log-desc">Did you take a smart step today? Click to add to your community impact tally:</p>
+          <div class="log-buttons-grid">
+            <button type="button" class="btn-log" data-type="walk_shift">
+              <span class="log-btn-icon">⏰</span>
+              <span>Shifted morning walk to afternoon (+2.5 hrs saved)</span>
+            </button>
+            <button type="button" class="btn-log" data-type="metro_commute">
+              <span class="log-btn-icon">🚇</span>
+              <span>Took Metro/bus instead of private vehicle (+3.2 kg CO₂)</span>
+            </button>
+            <button type="button" class="btn-log" data-type="door_seal">
+              <span class="log-btn-icon">🚪</span>
+              <span>Damp-towel sealed balcony/drafts (+4 hrs clean room)</span>
+            </button>
+            <button type="button" class="btn-log" data-type="no_smoke">
+              <span class="log-btn-icon">🕯️</span>
+              <span>Skipped incense / agarbatti indoor smoke (+3 hrs safe indoor air)</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- How We Estimate This Explainer -->
+        <div class="methodology-card">
+          <div class="methodology-header">
+            <span class="info-icon" aria-hidden="true">ℹ️</span>
+            <h3>How We Estimate This</h3>
+          </div>
+          <p>
+            <strong>Exposure Hours Avoided:</strong> Calculated by comparing your profile schedule against CPCB/Google Air Quality API diurnal inversion curves. Typical ground-level PM2.5 spikes by 200-350% between 5:00 AM and 9:30 AM due to planetary boundary layer compression. Moving heavy exertion outside this window directly averts acute particulate deposition in deep alveolar airways.
+          </p>
+          <p>
+            <strong>CO₂ Savings:</strong> Based on Central Pollution Control Board (CPCB) and Bureau of Energy Efficiency (BEE) average vehicular emissions (~110g CO₂/km for small 2-wheelers, ~160g CO₂/km for petrol cars) versus electrified mass transit (~15g CO₂/passenger-km on Delhi Metro).
+          </p>
+          <p>
+            <strong>Indoor Protection:</strong> Damp-towel seals and controlled kitchen cross-ventilation have been empirically shown in urban Indian low-cost housing studies to cut indoor infiltration of coarse PM10 and PM2.5 by 15-30% in unsealed apartments.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Accessibility Footer -->
+  <footer class="app-footer" role="contentinfo">
+    <div class="container footer-content">
+      <p><strong>Saans (साँस)</strong> • Built for Indian communities facing winter smog.</p>
+      <p class="footer-sources">Grounded in India National AQI (NAQI) breakpoints, Google Air Quality API & Gemini GenAI models.</p>
+      <p class="footer-disclaimer">Disclaimer: Saans provides lifestyle and environmental hazard awareness. It does not provide clinical diagnosis or medical prescriptions. Consult a licensed physician for respiratory distress.</p>
+    </div>
+  </footer>
+
+  <!-- Application Logic Modules -->
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
